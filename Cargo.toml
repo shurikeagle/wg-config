@@ -10,3 +10,5 @@ license = "MIT"
 keywords = ["wireguard", "wg", "config", "vpn", "management"]
 
 [dependencies]
+base64 = "0.22.1"
+ipnetwork = "0.20.0"

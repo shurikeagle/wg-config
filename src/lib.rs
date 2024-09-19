@@ -1,14 +1,10 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+mod error;
+mod keys;
+mod wg_conf;
+mod wg_interface;
+mod wg_peer;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use error::*;
+pub use keys::*;
+pub use wg_conf::*;
+pub use wg_interface::*;
