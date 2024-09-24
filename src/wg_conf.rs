@@ -79,7 +79,8 @@ impl WgConf {
         let mut has_peers = false;
 
         let mut lines_iter = BufReader::new(&mut self.conf_file).lines();
-        for line in lines_iter.next() {
+
+        while let Some(line) = lines_iter.next() {
             match line {
                 Ok(mut line) => {
                     line = line.trim().to_owned();
@@ -87,7 +88,7 @@ impl WgConf {
                         continue;
                     }
 
-                    // Stop when first [Peer] will be reached
+                    // Stop when the first [Peer] will be reached
                     if line == wg_peer::TAG {
                         has_peers = true;
                         break;
@@ -191,9 +192,9 @@ PostUp = ufw allow 8080/udp
 PostDown = ufw delete allow 8080/udp
 ";
 
-    struct Cleanup<'a>(&'a dyn Fn() -> ());
+    struct Cleanup(Box<dyn Fn() -> ()>);
 
-    impl Drop for Cleanup<'_> {
+    impl Drop for Cleanup {
         fn drop(&mut self) {
             let _ = (self.0)();
         }
@@ -202,19 +203,11 @@ PostDown = ufw delete allow 8080/udp
     #[test]
     fn open_0_common_scenario() {
         // Arrange
-        let test_conf_file = "wg1.conf";
-        {
-            let mut file = fs::File::create(test_conf_file).unwrap();
-            file.write_all(INTERFACE_CONTENT.as_bytes()).unwrap();
-        }
-
-        let cleanup_fn = || {
-            let _ = fs::remove_file(test_conf_file);
-        };
-        let _cleanup = Cleanup(&cleanup_fn);
+        const TEST_CONF_FILE: &str = "wg1.conf";
+        let _cleanup = prepare_test_conf(&TEST_CONF_FILE, INTERFACE_CONTENT);
 
         // Act
-        let wg_conf = WgConf::open(&test_conf_file);
+        let wg_conf = WgConf::open(TEST_CONF_FILE);
 
         // Assert
         assert!(wg_conf.is_ok())
@@ -223,10 +216,10 @@ PostDown = ufw delete allow 8080/udp
     #[test]
     fn open_0_unexistent_file_0_returns_not_found() {
         // Arrange
-        let test_conf_file = "unexistent";
+        const TEST_CONF_FILE: &str = "unexistent";
 
         // Act
-        let wg_conf = WgConf::open(&test_conf_file);
+        let wg_conf = WgConf::open(&TEST_CONF_FILE);
 
         // Assert
         assert!(wg_conf.is_err());
@@ -236,18 +229,11 @@ PostDown = ufw delete allow 8080/udp
     #[test]
     fn open_0_invalid_extension_0_returns_not_wg_conf() {
         // Arrange
-        let test_conf_file = "wg2.cong";
-        {
-            let mut file = fs::File::create(test_conf_file).unwrap();
-            file.write_all(INTERFACE_CONTENT.as_bytes()).unwrap();
-        }
-        let cleanup_fn = || {
-            let _ = fs::remove_file(test_conf_file);
-        };
-        let _cleanup = Cleanup(&cleanup_fn);
+        const TEST_CONF_FILE: &str = "wg2.cong";
+        let _cleanup = prepare_test_conf(&TEST_CONF_FILE, INTERFACE_CONTENT);
 
         // Act
-        let wg_conf = WgConf::open(&test_conf_file);
+        let wg_conf = WgConf::open(TEST_CONF_FILE);
 
         // Assert
         assert!(wg_conf.is_err());
@@ -257,21 +243,107 @@ PostDown = ufw delete allow 8080/udp
     #[test]
     fn open_0_bad_interface_tag_0_returns_not_wg_conf() {
         // Arrange
-        let test_conf_file = "wg3.conf";
-        {
-            let mut file = fs::File::create(test_conf_file).unwrap();
-            file.write_all("[Interfacece]".as_bytes()).unwrap();
-        }
-        let cleanup_fn = || {
-            let _ = fs::remove_file(test_conf_file);
-        };
-        let _cleanup = Cleanup(&cleanup_fn);
+        const TEST_CONF_FILE: &str = "wg3.conf";
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, "[Interfacece]");
 
         // Act
-        let wg_conf = WgConf::open(&test_conf_file);
+        let wg_conf = WgConf::open(TEST_CONF_FILE);
 
         // Assert
         assert!(wg_conf.is_err());
         assert!(wg_conf.unwrap_err().kind() == WgConfErrKind::NotWgConfig)
+    }
+
+    #[test]
+    fn interface_0_common_scenario() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg4.conf";
+        let _cleanup = prepare_test_conf(&TEST_CONF_FILE, INTERFACE_CONTENT);
+        let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+
+        // Act
+        let interface = wg_conf.interface();
+
+        // Assert
+        assert!(interface.is_ok());
+        let interface = interface.unwrap();
+        assert_eq!(
+            "4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=",
+            interface.private_key.to_string()
+        );
+        assert_eq!("10.0.0.1/24", interface.address.to_string());
+        assert_eq!(8080, interface.listen_port);
+        assert_eq!("ufw allow 8080/udp", interface.post_up);
+        assert_eq!("ufw delete allow 8080/udp", interface.post_down);
+    }
+
+    #[test]
+    fn interface_0_empty_double_not_interface_lines_0_returns_ok() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg5.conf";
+        const CONTENT: &str = "[Interface]
+    ttt = eee
+PrivateKey = 4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=
+
+Address = 10.0.0.1/24
+ListenPort = 8080
+PostDown = ufw delete allow 8080/udp
+Address = 10.0.0.1/24
+
+
+# ttst
+abctest = def
+PostUp = ufw allow 8080/udp";
+        let _cleanup = prepare_test_conf(&TEST_CONF_FILE, CONTENT);
+        let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+
+        // Act
+        let interface = wg_conf.interface();
+
+        // Assert
+        assert!(interface.is_ok());
+        let interface = interface.unwrap();
+        assert_eq!(
+            "4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=",
+            interface.private_key.to_string()
+        );
+        assert_eq!("10.0.0.1/24", interface.address.to_string());
+        assert_eq!(8080, interface.listen_port);
+        assert_eq!("ufw allow 8080/udp", interface.post_up);
+        assert_eq!("ufw delete allow 8080/udp", interface.post_down);
+    }
+
+    #[test]
+    fn interface_0_not_key_value_lines_0_returns_unexpected_err() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg4.conf";
+        const CONTENT: &str = "[Interface]
+    ttt = eee
+PrivateKey
+";
+        let _cleanup = prepare_test_conf(&TEST_CONF_FILE, CONTENT);
+        let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+
+        // Act
+        let interface = wg_conf.interface();
+
+        // Assert
+        assert!(interface.is_err());
+        let err = interface.unwrap_err();
+        assert!(err.kind() == WgConfErrKind::Unexpected);
+        assert!(err.to_string().contains("not key-value"));
+    }
+
+    fn prepare_test_conf(conf_name: &'static str, content: &str) -> Cleanup {
+        {
+            let mut file = fs::File::create(conf_name).unwrap();
+            file.write_all(content.as_bytes()).unwrap();
+        }
+
+        let cleanup_fn = || {
+            let _ = fs::remove_file(conf_name.to_owned());
+        };
+
+        Cleanup(Box::new(cleanup_fn))
     }
 }

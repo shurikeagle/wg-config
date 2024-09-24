@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr};
+use std::collections::HashMap;
 
 use ipnetwork::IpNetwork;
 
@@ -10,11 +10,11 @@ pub const TAG: &'static str = "[Interface]";
 /// Represents WG [Interface] section
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WgInterface {
-    private_key: WgPrivateKey,
-    address: IpNetwork,
-    listen_port: u16,
-    post_up: String,
-    post_down: String,
+    pub(crate) private_key: WgPrivateKey,
+    pub(crate) address: IpNetwork,
+    pub(crate) listen_port: u16,
+    pub(crate) post_up: String,
+    pub(crate) post_down: String,
 }
 
 impl WgInterface {
@@ -24,7 +24,7 @@ impl WgInterface {
     pub fn new(
         private_key: String,
         address: String,
-        listen_port: u16,
+        listen_port: String,
         post_up: String,
         post_down: String,
     ) -> Result<WgInterface, WgConfError> {
@@ -35,6 +35,10 @@ impl WgInterface {
                 "address must be address with mask (e.g. 10.0.0.1/8)"
             ))
         })?;
+
+        let listen_port: u16 = listen_port
+            .parse()
+            .map_err(|_| WgConfError::ValidationFailed("invalid port raw value".to_string()))?;
 
         if listen_port == 0 {
             return Err(WgConfError::ValidationFailed("port can't be 0".to_string()));
@@ -54,7 +58,7 @@ impl WgInterface {
     ) -> Result<WgInterface, WgConfError> {
         let mut private_key = String::new();
         let mut address = String::new();
-        let mut listen_port: u16 = 0;
+        let mut listen_port: String = String::new();
         let mut post_up = String::new();
         let mut post_down = String::new();
 
@@ -62,19 +66,15 @@ impl WgInterface {
             match k {
                 _ if k == "PrivateKey" => private_key = v,
                 _ if k == "Address" => address = v,
-                _ if k == "ListenPort" => {
-                    let port: u16 = v.parse().map_err(|_| {
-                        WgConfError::ValidationFailed("invalid port raw value".to_string())
-                    })?;
-                    listen_port = port
-                }
+                _ if k == "ListenPort" => listen_port = v,
                 _ if k == "PostUp" => post_up = v,
                 _ if k == "PostDown" => post_down = v,
                 _ => continue,
             }
         }
 
-        todo!();
-        Err(WgConfError::ConfFileClosed)
+        WgInterface::new(private_key, address, listen_port, post_up, post_down)
     }
+
+    // TODO: getters
 }
