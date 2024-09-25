@@ -1,3 +1,4 @@
+mod common;
 mod error;
 mod keys;
 mod wg_conf;

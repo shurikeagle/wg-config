@@ -1,20 +1,21 @@
 use std::{
     collections::HashMap,
     ffi::OsStr,
-    fs::{File, OpenOptions},
-    io::{BufRead, BufReader, ErrorKind, Seek},
+    fs::{self, File, OpenOptions},
+    io::{self, BufRead, BufReader, ErrorKind, Seek, SeekFrom, Write},
     path::Path,
 };
 
-use crate::{error::WgConfError, wg_interface, wg_peer, WgInterface};
+use crate::{common::Deferred, error::WgConfError, wg_interface, wg_peer, WgInterface};
 
 const CONF_EXTENSION: &'static str = "conf";
 
-// TODO: Add mutex maybe (one need to think about better solution)
+// TODO: Add mutex maybe (one need to think about some better solution)
 
 /// Represents WG configuration file
 #[derive(Debug)]
 pub struct WgConf {
+    file_name: String,
     conf_file: File,
     cache: WgConfCache,
 }
@@ -46,6 +47,7 @@ impl WgConf {
         check_if_wg_conf(file_name, &mut file)?;
 
         Ok(WgConf {
+            file_name: file_name.to_owned(),
             conf_file: file,
             cache: WgConfCache {
                 interface: None,
@@ -70,6 +72,22 @@ impl WgConf {
         Ok(interface)
     }
 
+    /// Updates [Interface] section in [`WgConf`] file
+    pub fn update_interface(self, new_inteface: WgInterface) -> Result<WgConf, WgConfError> {
+        if let Some(cached_interface) = &self.cache.interface {
+            if *cached_interface == new_inteface {
+                return Ok(self);
+            }
+        }
+
+        // TODO: Update interface in file
+        let updated_conf = self.update_interface_in_file(new_inteface)?;
+
+        todo!("cache");
+
+        Ok(updated_conf)
+    }
+
     /// Closes [`WgConf`] underlying file
     pub fn close(self) {
         // nothing happens, just moving the variable like in a drop func
@@ -82,20 +100,20 @@ impl WgConf {
 
         let mut lines_iter = BufReader::new(&mut self.conf_file).lines();
 
-        let mut cur_position: u64 = 0;
+        let mut cur_position: usize = 0;
         while let Some(line) = lines_iter.next() {
             match line {
-                Ok(mut line) => {
-                    cur_position += line.len() as u64;
+                Ok(line) => {
+                    cur_position += line.len();
 
-                    line = line.trim().to_owned();
+                    let line = line.trim().to_owned();
                     if line == "" || line.starts_with("#") || line == wg_interface::TAG {
                         continue;
                     }
 
                     // Stop when the first [Peer] will be reached
                     if line == wg_peer::TAG {
-                        cur_position = cur_position - wg_peer::TAG.len() as u64 - 1;
+                        cur_position = cur_position - wg_peer::TAG.len() - 1;
                         break;
                     }
 
@@ -111,11 +129,120 @@ impl WgConf {
             }
         }
 
-        self.cache.peer_start_pos = Some(cur_position);
+        self.cache.peer_start_pos = Some(cur_position as u64);
 
         let _ = seek_to_start(&mut self.conf_file, "");
 
         Ok(kv)
+    }
+
+    fn update_interface_in_file(mut self, interface: WgInterface) -> Result<WgConf, WgConfError> {
+        let conf_file_name = self.file_name.clone();
+        let tmp_file_name = conf_file_name + ".tmp";
+        let mut tmp_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&tmp_file_name)
+            .map_err(|err| {
+                WgConfError::Unexpected(format!(
+                    "Couldn't create {}: {}",
+                    &tmp_file_name,
+                    err.to_string()
+                ))
+            })?;
+
+        let remove_tmp_name = tmp_file_name.clone();
+        let remove_tmp_fn = move || {
+            let _ = fs::remove_file(remove_tmp_name.clone());
+        };
+        let _deferred_remove_tmp = Deferred(Box::new(remove_tmp_fn));
+
+        // write new interface section into tmp
+        tmp_file
+            .write_all(interface.to_string().as_bytes())
+            .map_err(|err| {
+                WgConfError::Unexpected(format!(
+                    "Couldn't write interface into {}: {}",
+                    &tmp_file_name,
+                    err.to_string()
+                ))
+            })?;
+
+        // define new Peer position to set it into the cache if update will be successfull
+        let updated_peer_start_pos = interface.to_string().len() as u64;
+
+        // copy peers from current conf file to dst
+        self.copy_peers(&mut tmp_file)?;
+
+        // replace conf by tmp
+        let mut updated_conf = self.replace_conf_file(tmp_file)?;
+        updated_conf.cache.interface = Some(interface);
+        updated_conf.cache.peer_start_pos = Some(updated_peer_start_pos);
+
+        Ok(updated_conf)
+    }
+
+    fn copy_peers(&mut self, mut dst_file: &File) -> Result<(), WgConfError> {
+        // define start position in src to copy
+        let src_peer_start_pos = self.peer_start_position(false)?;
+
+        // set position to copy only Peer section
+        self.conf_file
+            .seek(SeekFrom::Start(src_peer_start_pos))
+            .map_err(|err| {
+                WgConfError::Unexpected(format!("Couldn't copy peers to tmp: {}", err.to_string()))
+            })?;
+
+        // copy to dst
+        io::copy(&mut self.conf_file, &mut dst_file).map_err(|err| {
+            WgConfError::Unexpected(format!("Couldn't copy peers to tmp: {}", err.to_string()))
+        })?;
+
+        Ok(())
+    }
+
+    fn replace_conf_file(mut self, new_conf_file: File) -> Result<WgConf, WgConfError> {
+        todo!("Implement")
+    }
+
+    fn peer_start_position(&mut self, ingore_cache: bool) -> Result<u64, WgConfError> {
+        if let Some(start_pos) = self.cache.peer_start_pos {
+            if !ingore_cache {
+                return Ok(start_pos);
+            }
+        }
+
+        seek_to_start(&mut self.conf_file, "Couldn't get peer start position")?;
+
+        let mut lines_iter = BufReader::new(&mut self.conf_file).lines();
+
+        let mut cur_position: usize = 0;
+        while let Some(line) = lines_iter.next() {
+            match line {
+                Ok(line) => {
+                    cur_position += line.len();
+
+                    // Stop when the first [Peer] will be reached
+                    if line == wg_peer::TAG {
+                        cur_position = cur_position - wg_peer::TAG.len() - 1;
+                        break;
+                    }
+                }
+                Err(err) => {
+                    let _ = seek_to_start(&mut self.conf_file, "Couldn't get peer start position");
+                    return Err(WgConfError::Unexpected(format!(
+                        "Couldn't read up to peer start position: {err}"
+                    )));
+                }
+            }
+        }
+
+        let cur_position = cur_position as u64;
+        self.cache.peer_start_pos = Some(cur_position);
+
+        let _ = seek_to_start(&mut self.conf_file, "");
+
+        Ok(cur_position)
     }
 }
 
@@ -179,7 +306,7 @@ fn key_value_from_raw_string(raw_string: &str) -> Result<(String, String), WgCon
 
 #[cfg(test)]
 mod tests {
-    use crate::error::WgConfErrKind;
+    use crate::{common::Deferred, error::WgConfErrKind};
 
     use super::*;
     use std::{fs, io::Write};
@@ -195,14 +322,6 @@ PostDown = ufw delete allow 8080/udp
 PostUp = ufw allow 8080/udp
 PostDown = ufw delete allow 8080/udp
 ";
-
-    struct Cleanup(Box<dyn Fn() -> ()>);
-
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = (self.0)();
-        }
-    }
 
     #[test]
     fn open_0_common_scenario() {
@@ -340,7 +459,7 @@ PrivateKey
         assert!(err.to_string().contains("not key-value"));
     }
 
-    fn prepare_test_conf(conf_name: &'static str, content: &str) -> Cleanup {
+    fn prepare_test_conf(conf_name: &'static str, content: &str) -> Deferred {
         {
             let mut file = fs::File::create(conf_name).unwrap();
             file.write_all(content.as_bytes()).unwrap();
@@ -350,6 +469,6 @@ PrivateKey
             let _ = fs::remove_file(conf_name.to_owned());
         };
 
-        Cleanup(Box::new(cleanup_fn))
+        Deferred(Box::new(cleanup_fn))
     }
 }

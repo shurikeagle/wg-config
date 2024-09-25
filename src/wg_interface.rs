@@ -7,6 +7,13 @@ use crate::{WgConfError, WgPrivateKey};
 /// Interface tag
 pub const TAG: &'static str = "[Interface]";
 
+// Fields
+pub const PRIVATE_KEY: &'static str = "PrivateKey";
+pub const ADDRESS: &'static str = "Address";
+pub const LISTEN_PORT: &'static str = "ListenPort";
+pub const POST_UP: &'static str = "PostUp";
+pub const POST_DOWN: &'static str = "PostDown";
+
 /// Represents WG [Interface] section
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WgInterface {
@@ -15,6 +22,32 @@ pub struct WgInterface {
     pub(crate) listen_port: u16,
     pub(crate) post_up: String,
     pub(crate) post_down: String,
+}
+
+impl ToString for WgInterface {
+    fn to_string(&self) -> String {
+        format!(
+            "\
+{}
+{} = {}
+{} = {}
+{} = {}
+{} = {}
+{} = {}
+",
+            TAG,
+            PRIVATE_KEY,
+            self.private_key.to_string(),
+            ADDRESS,
+            self.address.to_string(),
+            LISTEN_PORT,
+            self.listen_port,
+            POST_UP,
+            &self.post_up,
+            POST_DOWN,
+            &self.post_down
+        )
+    }
 }
 
 impl WgInterface {
@@ -85,11 +118,11 @@ impl WgInterface {
 
         for (k, v) in raw_key_values {
             match k {
-                _ if k == "PrivateKey" => private_key = v,
-                _ if k == "Address" => address = v,
-                _ if k == "ListenPort" => listen_port = v,
-                _ if k == "PostUp" => post_up = v,
-                _ if k == "PostDown" => post_down = v,
+                _ if k == PRIVATE_KEY => private_key = v,
+                _ if k == ADDRESS => address = v,
+                _ if k == LISTEN_PORT => listen_port = v,
+                _ if k == POST_UP => post_up = v,
+                _ if k == POST_DOWN => post_down = v,
                 _ => continue,
             }
         }
