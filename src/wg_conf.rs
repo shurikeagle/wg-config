@@ -10,7 +10,7 @@ use crate::{error::WgConfError, wg_interface, wg_peer, WgInterface};
 
 const CONF_EXTENSION: &'static str = "conf";
 
-// TODO: Add mutex
+// TODO: Add mutex maybe (one need to think about better solution)
 
 /// Represents WG configuration file
 #[derive(Debug)]
@@ -64,7 +64,10 @@ impl WgConf {
 
         let interface_key_values = self.interface_key_values_from_file()?;
 
-        WgInterface::from_raw_key_values(interface_key_values)
+        let interface = WgInterface::from_raw_key_values(interface_key_values)?;
+        self.cache.interface = Some(interface.clone());
+
+        Ok(interface)
     }
 
     /// Closes [`WgConf`] underlying file
@@ -76,13 +79,15 @@ impl WgConf {
         seek_to_start(&mut self.conf_file, "Couldn't get interface section")?;
 
         let mut kv: HashMap<String, String> = HashMap::with_capacity(10);
-        let mut has_peers = false;
 
         let mut lines_iter = BufReader::new(&mut self.conf_file).lines();
 
+        let mut cur_position: u64 = 0;
         while let Some(line) = lines_iter.next() {
             match line {
                 Ok(mut line) => {
+                    cur_position += line.len() as u64;
+
                     line = line.trim().to_owned();
                     if line == "" || line.starts_with("#") || line == wg_interface::TAG {
                         continue;
@@ -90,7 +95,7 @@ impl WgConf {
 
                     // Stop when the first [Peer] will be reached
                     if line == wg_peer::TAG {
-                        has_peers = true;
+                        cur_position = cur_position - wg_peer::TAG.len() as u64 - 1;
                         break;
                     }
 
@@ -106,12 +111,7 @@ impl WgConf {
             }
         }
 
-        if let Ok(mut peer_start_pos) = self.conf_file.stream_position() {
-            if has_peers {
-                peer_start_pos = peer_start_pos - wg_peer::TAG.len() as u64 - 1;
-                self.cache.peer_start_pos = Some(peer_start_pos);
-            }
-        }
+        self.cache.peer_start_pos = Some(cur_position);
 
         let _ = seek_to_start(&mut self.conf_file, "");
 
@@ -188,6 +188,10 @@ mod tests {
 PrivateKey = 4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=
 Address = 10.0.0.1/24
 ListenPort = 8080
+PostUp = ufw allow 8080/udp
+PostDown = ufw delete allow 8080/udp
+
+[Peer]
 PostUp = ufw allow 8080/udp
 PostDown = ufw delete allow 8080/udp
 ";
@@ -275,10 +279,12 @@ PostDown = ufw delete allow 8080/udp
         assert_eq!(8080, interface.listen_port);
         assert_eq!("ufw allow 8080/udp", interface.post_up);
         assert_eq!("ufw delete allow 8080/udp", interface.post_down);
+        assert!(wg_conf.cache.interface.is_some());
+        assert!(wg_conf.cache.peer_start_pos.is_some());
     }
 
     #[test]
-    fn interface_0_empty_double_not_interface_lines_0_returns_ok() {
+    fn interface_0_empty_double_not_interface_kv_0_returns_ok() {
         // Arrange
         const TEST_CONF_FILE: &str = "wg5.conf";
         const CONTENT: &str = "[Interface]
@@ -316,7 +322,7 @@ PostUp = ufw allow 8080/udp";
     #[test]
     fn interface_0_not_key_value_lines_0_returns_unexpected_err() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg4.conf";
+        const TEST_CONF_FILE: &str = "wg6.conf";
         const CONTENT: &str = "[Interface]
     ttt = eee
 PrivateKey

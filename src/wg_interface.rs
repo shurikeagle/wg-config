@@ -22,6 +22,27 @@ impl WgInterface {
     ///
     /// Note, that WG address is address with mask (e.g. 10.0.0.1/8)
     pub fn new(
+        private_key: WgPrivateKey,
+        address: IpNetwork,
+        listen_port: u16,
+        post_up: String,
+        post_down: String,
+    ) -> Result<WgInterface, WgConfError> {
+        if listen_port == 0 {
+            return Err(WgConfError::ValidationFailed("port can't be 0".to_string()));
+        }
+
+        Ok(WgInterface {
+            private_key,
+            address,
+            listen_port,
+            post_up,
+            post_down,
+        })
+    }
+
+    /// Creates new [`WgInterface`] from raw String values
+    pub fn from_raw_values(
         private_key: String,
         address: String,
         listen_port: String,
@@ -73,8 +94,23 @@ impl WgInterface {
             }
         }
 
-        WgInterface::new(private_key, address, listen_port, post_up, post_down)
+        WgInterface::from_raw_values(private_key, address, listen_port, post_up, post_down)
     }
 
-    // TODO: getters
+    // getters
+    pub fn private_key(&self) -> &WgPrivateKey {
+        &self.private_key
+    }
+    pub fn address(&self) -> &IpNetwork {
+        &self.address
+    }
+    pub fn listen_port(&self) -> u16 {
+        self.listen_port
+    }
+    pub fn post_up(&self) -> &str {
+        &self.post_up
+    }
+    pub fn post_down(&self) -> &str {
+        &self.post_down
+    }
 }
