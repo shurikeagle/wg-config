@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use crate::{common::Deferred, error::WgConfError, wg_interface, wg_peer, WgInterface};
+use crate::{error::WgConfError, wg_interface, wg_peer, WgConfErrKind, WgInterface};
 
 const CONF_EXTENSION: &'static str = "conf";
 
@@ -34,15 +34,7 @@ impl WgConf {
     /// Note, that [`WgConf`] always keeps the underlying config file open till the end of ownership
     /// or untill drop() or WgConf.close() invoked
     pub fn open(file_name: &str) -> Result<WgConf, WgConfError> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .append(true)
-            .open(file_name)
-            .map_err(|err| match err.kind() {
-                ErrorKind::NotFound => WgConfError::NotFound(file_name.to_string()),
-                _ => WgConfError::Unexpected(err.to_string()),
-            })?;
+        let mut file = open_conf_file(file_name)?;
 
         check_if_wg_conf(file_name, &mut file)?;
 
@@ -80,12 +72,7 @@ impl WgConf {
             }
         }
 
-        // TODO: Update interface in file
-        let updated_conf = self.update_interface_in_file(new_inteface)?;
-
-        todo!("cache");
-
-        Ok(updated_conf)
+        self.update_interface_in_file(new_inteface)
     }
 
     /// Closes [`WgConf`] underlying file
@@ -151,16 +138,12 @@ impl WgConf {
                 ))
             })?;
 
-        let remove_tmp_name = tmp_file_name.clone();
-        let remove_tmp_fn = move || {
-            let _ = fs::remove_file(remove_tmp_name.clone());
-        };
-        let _deferred_remove_tmp = Deferred(Box::new(remove_tmp_fn));
-
         // write new interface section into tmp
         tmp_file
             .write_all(interface.to_string().as_bytes())
             .map_err(|err| {
+                let _ = fs::remove_file(&tmp_file_name);
+
                 WgConfError::Unexpected(format!(
                     "Couldn't write interface into {}: {}",
                     &tmp_file_name,
@@ -172,10 +155,23 @@ impl WgConf {
         let updated_peer_start_pos = interface.to_string().len() as u64;
 
         // copy peers from current conf file to dst
-        self.copy_peers(&mut tmp_file)?;
+        self.copy_peers(&mut tmp_file).map_err(|err| {
+            let _ = fs::remove_file(&tmp_file_name);
+
+            err
+        })?;
 
         // replace conf by tmp
-        let mut updated_conf = self.replace_conf_file(tmp_file)?;
+        let mut updated_conf = self
+            .replace_conf_file(tmp_file, &tmp_file_name)
+            .map_err(|err| {
+                // keep tmp file if main file was already deleted
+                if err.kind() != WgConfErrKind::CriticalKeepTmp {
+                    let _ = fs::remove_file(&tmp_file_name);
+                }
+
+                err
+            })?;
         updated_conf.cache.interface = Some(interface);
         updated_conf.cache.peer_start_pos = Some(updated_peer_start_pos);
 
@@ -201,8 +197,30 @@ impl WgConf {
         Ok(())
     }
 
-    fn replace_conf_file(mut self, new_conf_file: File) -> Result<WgConf, WgConfError> {
-        todo!("Implement")
+    fn replace_conf_file(
+        mut self,
+        new_conf_file: File,
+        new_conf_file_tmp_name: &str,
+    ) -> Result<WgConf, WgConfError> {
+        drop(self.conf_file);
+        drop(new_conf_file);
+
+        fs::remove_file(&self.file_name).map_err(|err| {
+            WgConfError::Unexpected(format!(
+                "Couldn't replace {} by tmp: {}",
+                &self.file_name,
+                err.to_string()
+            ))
+        })?;
+
+        fs::rename(new_conf_file_tmp_name, &self.file_name).map_err(|err| {
+            WgConfError::CriticalKeepTmp(format!("Couldn't rename tmp file: {}", err.to_string()))
+        })?;
+
+        let new_file = open_conf_file(&self.file_name)?;
+        self.conf_file = new_file;
+
+        Ok(self)
     }
 
     fn peer_start_position(&mut self, ingore_cache: bool) -> Result<u64, WgConfError> {
@@ -280,6 +298,18 @@ pub fn check_if_wg_conf(file_name: &str, file: &mut File) -> Result<(), WgConfEr
     res
 }
 
+fn open_conf_file(file_name: &str) -> Result<File, WgConfError> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .append(true)
+        .open(file_name)
+        .map_err(|err| match err.kind() {
+            ErrorKind::NotFound => WgConfError::NotFound(file_name.to_string()),
+            _ => WgConfError::Unexpected(err.to_string()),
+        })
+}
+
 fn seek_to_start(file: &mut File, err_msg: &str) -> Result<(), WgConfError> {
     file.seek(std::io::SeekFrom::Start(0))
         .map_err(|err| WgConfError::Unexpected(format!("{}: {}", err_msg, err.to_string())))?;
@@ -306,7 +336,7 @@ fn key_value_from_raw_string(raw_string: &str) -> Result<(String, String), WgCon
 
 #[cfg(test)]
 mod tests {
-    use crate::{common::Deferred, error::WgConfErrKind};
+    use crate::error::WgConfErrKind;
 
     use super::*;
     use std::{fs, io::Write};
@@ -317,17 +347,30 @@ Address = 10.0.0.1/24
 ListenPort = 8080
 PostUp = ufw allow 8080/udp
 PostDown = ufw delete allow 8080/udp
+";
+
+    const PEER_CONTENT: &'static str = "[Peer]
+PublicKey = LyXP6s7mzMlrlcZ5STONcPwTQFOUJuD8yQg6FYDeTzE=
+AllowedIPs = 10.0.0.2/32
 
 [Peer]
-PostUp = ufw allow 8080/udp
-PostDown = ufw delete allow 8080/udp
+PublicKey = Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=
+AllowedIPs = 10.0.0.3/32
 ";
+
+    struct Deferred(pub Box<dyn Fn() -> ()>);
+
+    impl Drop for Deferred {
+        fn drop(&mut self) {
+            let _ = (self.0)();
+        }
+    }
 
     #[test]
     fn open_0_common_scenario() {
         // Arrange
         const TEST_CONF_FILE: &str = "wg1.conf";
-        let _cleanup = prepare_test_conf(&TEST_CONF_FILE, INTERFACE_CONTENT);
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, INTERFACE_CONTENT);
 
         // Act
         let wg_conf = WgConf::open(TEST_CONF_FILE);
@@ -342,7 +385,7 @@ PostDown = ufw delete allow 8080/udp
         const TEST_CONF_FILE: &str = "unexistent";
 
         // Act
-        let wg_conf = WgConf::open(&TEST_CONF_FILE);
+        let wg_conf = WgConf::open(TEST_CONF_FILE);
 
         // Assert
         assert!(wg_conf.is_err());
@@ -353,7 +396,7 @@ PostDown = ufw delete allow 8080/udp
     fn open_0_invalid_extension_0_returns_not_wg_conf() {
         // Arrange
         const TEST_CONF_FILE: &str = "wg2.cong";
-        let _cleanup = prepare_test_conf(&TEST_CONF_FILE, INTERFACE_CONTENT);
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, INTERFACE_CONTENT);
 
         // Act
         let wg_conf = WgConf::open(TEST_CONF_FILE);
@@ -381,7 +424,7 @@ PostDown = ufw delete allow 8080/udp
     fn interface_0_common_scenario() {
         // Arrange
         const TEST_CONF_FILE: &str = "wg4.conf";
-        let _cleanup = prepare_test_conf(&TEST_CONF_FILE, INTERFACE_CONTENT);
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, INTERFACE_CONTENT);
         let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
 
         // Act
@@ -419,7 +462,7 @@ Address = 10.0.0.1/24
 # ttst
 abctest = def
 PostUp = ufw allow 8080/udp";
-        let _cleanup = prepare_test_conf(&TEST_CONF_FILE, CONTENT);
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, CONTENT);
         let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
 
         // Act
@@ -446,7 +489,7 @@ PostUp = ufw allow 8080/udp";
     ttt = eee
 PrivateKey
 ";
-        let _cleanup = prepare_test_conf(&TEST_CONF_FILE, CONTENT);
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, CONTENT);
         let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
 
         // Act
@@ -457,6 +500,45 @@ PrivateKey
         let err = interface.unwrap_err();
         assert!(err.kind() == WgConfErrKind::Unexpected);
         assert!(err.to_string().contains("not key-value"));
+    }
+
+    #[test]
+    fn update_interface_0_common_scenario() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg7.conf";
+        let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT;
+
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
+        let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+
+        // invoke to set peer start position cache
+        let _ = wg_conf.interface();
+        let old_peer_pos = wg_conf.cache.peer_start_pos.unwrap();
+
+        let new_interface = WgInterface::new(
+            "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
+                .to_string()
+                .parse()
+                .unwrap(),
+            "192.168.130.131/25".parse().unwrap(),
+            8082,
+            "some-script".to_string(),
+            "some-other-script".to_string(),
+        )
+        .unwrap();
+
+        // Act
+        let updated_conf = wg_conf.update_interface(new_interface.clone());
+        assert!(updated_conf.is_ok());
+        let mut updated_conf = updated_conf.unwrap();
+        let interface_by_method = updated_conf.interface();
+
+        // Assert
+        let cur_peer_start_pos = updated_conf.cache.peer_start_pos.unwrap();
+        assert_ne!(old_peer_pos, cur_peer_start_pos);
+        assert!(interface_by_method.is_ok());
+        let interface_by_method = interface_by_method.unwrap();
+        assert_eq!(new_interface, interface_by_method);
     }
 
     fn prepare_test_conf(conf_name: &'static str, content: &str) -> Deferred {

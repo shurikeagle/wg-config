@@ -27,8 +27,7 @@ pub struct WgInterface {
 impl ToString for WgInterface {
     fn to_string(&self) -> String {
         format!(
-            "\
-{}
+            "{}
 {} = {}
 {} = {}
 {} = {}

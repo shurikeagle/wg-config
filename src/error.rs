@@ -6,7 +6,6 @@ pub enum WgConfErrKind {
     NotFound,
     NotWgConfig,
     ConfFileClosed,
-    CouldntReopenAfterUpdate,
     ValidationFailed,
     CouldntUpdateInterface,
     CriticalKeepTmp,
@@ -17,8 +16,6 @@ pub enum WgConfError {
     Unexpected(String),
     NotFound(String),
     NotWgConfig(String),
-    ConfFileClosed,
-    CouldntReopenAfterUpdate,
     ValidationFailed(String),
     CouldntUpdateInterface(String),
     CriticalKeepTmp(String),
@@ -30,8 +27,6 @@ impl WgConfError {
             WgConfError::Unexpected(_) => WgConfErrKind::Unexpected,
             WgConfError::NotFound(_) => WgConfErrKind::NotFound,
             WgConfError::NotWgConfig(_) => WgConfErrKind::NotWgConfig,
-            WgConfError::ConfFileClosed => WgConfErrKind::ConfFileClosed,
-            WgConfError::CouldntReopenAfterUpdate => WgConfErrKind::CouldntReopenAfterUpdate,
             WgConfError::ValidationFailed(_) => WgConfErrKind::ValidationFailed,
             WgConfError::CouldntUpdateInterface(_) => WgConfErrKind::CouldntUpdateInterface,
             WgConfError::CriticalKeepTmp(_) => WgConfErrKind::CriticalKeepTmp,
@@ -46,10 +41,6 @@ impl Display for WgConfError {
             WgConfError::NotFound(object_name) => write!(f, "{object_name} not found"),
             WgConfError::NotWgConfig(details) => {
                 write!(f, "File is not a valid WG config: {details}")
-            }
-            WgConfError::ConfFileClosed => write!(f, "WG config file is closed"),
-            WgConfError::CouldntReopenAfterUpdate => {
-                write!(f, "Couldn't reopen WG config file after successful update")
             }
             WgConfError::ValidationFailed(details) => write!(f, "WG validation failed: {details}"),
             WgConfError::CouldntUpdateInterface(err) => {
