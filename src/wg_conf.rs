@@ -439,8 +439,8 @@ AllowedIPs = 10.0.0.3/32
         );
         assert_eq!("10.0.0.1/24", interface.address.to_string());
         assert_eq!(8080, interface.listen_port);
-        assert_eq!("ufw allow 8080/udp", interface.post_up);
-        assert_eq!("ufw delete allow 8080/udp", interface.post_down);
+        assert_eq!(Some("ufw allow 8080/udp"), interface.post_up());
+        assert_eq!(Some("ufw delete allow 8080/udp"), interface.post_down());
         assert!(wg_conf.cache.interface.is_some());
         assert!(wg_conf.cache.peer_start_pos.is_some());
     }
@@ -455,7 +455,6 @@ PrivateKey = 4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=
 
 Address = 10.0.0.1/24
 ListenPort = 8080
-PostDown = ufw delete allow 8080/udp
 Address = 10.0.0.1/24
 
 
@@ -477,8 +476,8 @@ PostUp = ufw allow 8080/udp";
         );
         assert_eq!("10.0.0.1/24", interface.address.to_string());
         assert_eq!(8080, interface.listen_port);
-        assert_eq!("ufw allow 8080/udp", interface.post_up);
-        assert_eq!("ufw delete allow 8080/udp", interface.post_down);
+        assert_eq!(Some("ufw allow 8080/udp"), interface.post_up());
+        assert_eq!(None, interface.post_down());
     }
 
     #[test]
@@ -522,8 +521,8 @@ PrivateKey
                 .unwrap(),
             "192.168.130.131/25".parse().unwrap(),
             8082,
-            "some-script".to_string(),
-            "some-other-script".to_string(),
+            Some("some-script".to_string()),
+            Some("some-other-script".to_string()),
         )
         .unwrap();
 

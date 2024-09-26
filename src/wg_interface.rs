@@ -20,19 +20,27 @@ pub struct WgInterface {
     pub(crate) private_key: WgPrivateKey,
     pub(crate) address: IpNetwork,
     pub(crate) listen_port: u16,
-    pub(crate) post_up: String,
-    pub(crate) post_down: String,
+    pub(crate) post_up: Option<String>,
+    pub(crate) post_down: Option<String>,
 }
 
 impl ToString for WgInterface {
     fn to_string(&self) -> String {
+        let post_up = match self.post_up.as_deref() {
+            Some(val) => format!("\n{} = {}", POST_UP, val),
+            None => "".to_string(),
+        };
+
+        let post_down = match self.post_down.as_deref() {
+            Some(val) => format!("\n{} = {}", POST_DOWN, &val),
+            None => "".to_string(),
+        };
+
         format!(
             "{}
 {} = {}
 {} = {}
-{} = {}
-{} = {}
-{} = {}
+{} = {}{}{}
 ",
             TAG,
             PRIVATE_KEY,
@@ -41,10 +49,8 @@ impl ToString for WgInterface {
             self.address.to_string(),
             LISTEN_PORT,
             self.listen_port,
-            POST_UP,
-            &self.post_up,
-            POST_DOWN,
-            &self.post_down
+            post_up,
+            post_down
         )
     }
 }
@@ -57,8 +63,8 @@ impl WgInterface {
         private_key: WgPrivateKey,
         address: IpNetwork,
         listen_port: u16,
-        post_up: String,
-        post_down: String,
+        post_up: Option<String>,
+        post_down: Option<String>,
     ) -> Result<WgInterface, WgConfError> {
         if listen_port == 0 {
             return Err(WgConfError::ValidationFailed("port can't be 0".to_string()));
@@ -78,8 +84,8 @@ impl WgInterface {
         private_key: String,
         address: String,
         listen_port: String,
-        post_up: String,
-        post_down: String,
+        post_up: Option<String>,
+        post_down: Option<String>,
     ) -> Result<WgInterface, WgConfError> {
         let private_key: WgPrivateKey = private_key.parse()?;
 
@@ -112,16 +118,16 @@ impl WgInterface {
         let mut private_key = String::new();
         let mut address = String::new();
         let mut listen_port: String = String::new();
-        let mut post_up = String::new();
-        let mut post_down = String::new();
+        let mut post_up: Option<String> = None;
+        let mut post_down: Option<String> = None;
 
         for (k, v) in raw_key_values {
             match k {
                 _ if k == PRIVATE_KEY => private_key = v,
                 _ if k == ADDRESS => address = v,
                 _ if k == LISTEN_PORT => listen_port = v,
-                _ if k == POST_UP => post_up = v,
-                _ if k == POST_DOWN => post_down = v,
+                _ if k == POST_UP => post_up = Some(v),
+                _ if k == POST_DOWN => post_down = Some(v),
                 _ => continue,
             }
         }
@@ -139,10 +145,75 @@ impl WgInterface {
     pub fn listen_port(&self) -> u16 {
         self.listen_port
     }
-    pub fn post_up(&self) -> &str {
-        &self.post_up
+    pub fn post_up(&self) -> Option<&str> {
+        self.post_up.as_deref()
     }
-    pub fn post_down(&self) -> &str {
-        &self.post_down
+    pub fn post_down(&self) -> Option<&str> {
+        self.post_down.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wg_interface_0_to_string_0_all_fields() {
+        // Assert
+        let interface = WgInterface::new(
+            "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
+                .to_string()
+                .parse()
+                .unwrap(),
+            "192.168.130.131/25".parse().unwrap(),
+            8082,
+            Some("some-script".to_string()),
+            Some("some-other-script".to_string()),
+        )
+        .unwrap();
+
+        // Act
+        let interf_string = interface.to_string();
+
+        // Assert
+        assert_eq!(
+            "[Interface]
+PrivateKey = 6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8=
+Address = 192.168.130.131/25
+ListenPort = 8082
+PostUp = some-script
+PostDown = some-other-script
+",
+            &interf_string
+        )
+    }
+
+    #[test]
+    fn wg_interface_0_to_string_0_empty_optionals() {
+        // Assert
+        let interface = WgInterface::new(
+            "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
+                .to_string()
+                .parse()
+                .unwrap(),
+            "192.168.130.131/25".parse().unwrap(),
+            8082,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Act
+        let interf_string = interface.to_string();
+
+        // Assert
+        assert_eq!(
+            "[Interface]
+PrivateKey = 6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8=
+Address = 192.168.130.131/25
+ListenPort = 8082
+",
+            &interf_string
+        )
     }
 }
