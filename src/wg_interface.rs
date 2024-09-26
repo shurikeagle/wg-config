@@ -2,22 +2,22 @@ use std::collections::HashMap;
 
 use ipnetwork::IpNetwork;
 
-use crate::{WgConfError, WgPrivateKey};
+use crate::{WgConfError, WgKey};
 
 /// Interface tag
-pub const TAG: &'static str = "[Interface]";
+pub const INTERFACE_TAG: &'static str = "[Interface]";
 
 // Fields
-pub const PRIVATE_KEY: &'static str = "PrivateKey";
-pub const ADDRESS: &'static str = "Address";
-pub const LISTEN_PORT: &'static str = "ListenPort";
-pub const POST_UP: &'static str = "PostUp";
-pub const POST_DOWN: &'static str = "PostDown";
+const PRIVATE_KEY: &'static str = "PrivateKey";
+const ADDRESS: &'static str = "Address";
+const LISTEN_PORT: &'static str = "ListenPort";
+const POST_UP: &'static str = "PostUp";
+const POST_DOWN: &'static str = "PostDown";
 
-/// Represents WG [Interface] section
+/// Represents WG \[Interface\] section
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WgInterface {
-    pub(crate) private_key: WgPrivateKey,
+    pub(crate) private_key: WgKey,
     pub(crate) address: IpNetwork,
     pub(crate) listen_port: u16,
     pub(crate) post_up: Option<String>,
@@ -42,7 +42,7 @@ impl ToString for WgInterface {
 {} = {}
 {} = {}{}{}
 ",
-            TAG,
+            INTERFACE_TAG,
             PRIVATE_KEY,
             self.private_key.to_string(),
             ADDRESS,
@@ -57,10 +57,8 @@ impl ToString for WgInterface {
 
 impl WgInterface {
     /// Creates new [`WgInterface`]
-    ///
-    /// Note, that WG address is address with mask (e.g. 10.0.0.1/8)
     pub fn new(
-        private_key: WgPrivateKey,
+        private_key: WgKey,
         address: IpNetwork,
         listen_port: u16,
         post_up: Option<String>,
@@ -80,6 +78,8 @@ impl WgInterface {
     }
 
     /// Creates new [`WgInterface`] from raw String values
+    ///
+    /// Note, that WG address is address with mask (e.g. 10.0.0.1/8)
     pub fn from_raw_values(
         private_key: String,
         address: String,
@@ -87,12 +87,12 @@ impl WgInterface {
         post_up: Option<String>,
         post_down: Option<String>,
     ) -> Result<WgInterface, WgConfError> {
-        let private_key: WgPrivateKey = private_key.parse()?;
+        let private_key: WgKey = private_key.parse()?;
 
         let address: IpNetwork = address.parse().map_err(|_| {
-            WgConfError::ValidationFailed(format!(
-                "address must be address with mask (e.g. 10.0.0.1/8)"
-            ))
+            WgConfError::ValidationFailed(
+                "address must be address with mask (e.g. 10.0.0.1/8)".to_string(),
+            )
         })?;
 
         let listen_port: u16 = listen_port
@@ -136,7 +136,7 @@ impl WgInterface {
     }
 
     // getters
-    pub fn private_key(&self) -> &WgPrivateKey {
+    pub fn private_key(&self) -> &WgKey {
         &self.private_key
     }
     pub fn address(&self) -> &IpNetwork {
@@ -162,7 +162,6 @@ mod tests {
         // Assert
         let interface = WgInterface::new(
             "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
-                .to_string()
                 .parse()
                 .unwrap(),
             "192.168.130.131/25".parse().unwrap(),
@@ -173,7 +172,7 @@ mod tests {
         .unwrap();
 
         // Act
-        let interf_string = interface.to_string();
+        let interf_raw = interface.to_string();
 
         // Assert
         assert_eq!(
@@ -184,7 +183,7 @@ ListenPort = 8082
 PostUp = some-script
 PostDown = some-other-script
 ",
-            &interf_string
+            &interf_raw
         )
     }
 
@@ -193,7 +192,6 @@ PostDown = some-other-script
         // Assert
         let interface = WgInterface::new(
             "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
-                .to_string()
                 .parse()
                 .unwrap(),
             "192.168.130.131/25".parse().unwrap(),
@@ -204,7 +202,7 @@ PostDown = some-other-script
         .unwrap();
 
         // Act
-        let interf_string = interface.to_string();
+        let interf_raw = interface.to_string();
 
         // Assert
         assert_eq!(
@@ -213,7 +211,7 @@ PrivateKey = 6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8=
 Address = 192.168.130.131/25
 ListenPort = 8082
 ",
-            &interf_string
+            &interf_raw
         )
     }
 }

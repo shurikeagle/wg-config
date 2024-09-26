@@ -8,3 +8,4 @@ pub use error::*;
 pub use keys::*;
 pub use wg_conf::*;
 pub use wg_interface::*;
+pub use wg_peer::*;

@@ -64,7 +64,7 @@ impl WgConf {
         Ok(interface)
     }
 
-    /// Updates [Interface] section in [`WgConf`] file
+    /// Updates \[Interface\] section in [`WgConf`] file
     pub fn update_interface(self, new_inteface: WgInterface) -> Result<WgConf, WgConfError> {
         if let Some(cached_interface) = &self.cache.interface {
             if *cached_interface == new_inteface {
@@ -94,13 +94,13 @@ impl WgConf {
                     cur_position += line.len();
 
                     let line = line.trim().to_owned();
-                    if line == "" || line.starts_with("#") || line == wg_interface::TAG {
+                    if line == "" || line.starts_with("#") || line == wg_interface::INTERFACE_TAG {
                         continue;
                     }
 
                     // Stop when the first [Peer] will be reached
-                    if line == wg_peer::TAG {
-                        cur_position = cur_position - wg_peer::TAG.len() - 1;
+                    if line == wg_peer::PEER_TAG {
+                        cur_position = cur_position - wg_peer::PEER_TAG.len() - 1;
                         break;
                     }
 
@@ -241,8 +241,8 @@ impl WgConf {
                     cur_position += line.len();
 
                     // Stop when the first [Peer] will be reached
-                    if line == wg_peer::TAG {
-                        cur_position = cur_position - wg_peer::TAG.len() - 1;
+                    if line == wg_peer::PEER_TAG {
+                        cur_position = cur_position - wg_peer::PEER_TAG.len() - 1;
                         break;
                     }
                 }
@@ -281,7 +281,7 @@ pub fn check_if_wg_conf(file_name: &str, file: &mut File) -> Result<(), WgConfEr
         Some(first_line) => {
             if first_line.map_err(|err| {
                 WgConfError::Unexpected(format!("{}: {}", ERR_MSG, err.to_string()))
-            })? == wg_interface::TAG
+            })? == wg_interface::INTERFACE_TAG
             {
                 Ok(())
             } else {
