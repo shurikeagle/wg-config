@@ -15,6 +15,7 @@ const PERSISTENT_KEEPALIVE: &'static str = "PersistentKeepalive";
 const DNS: &'static str = "DNS";
 
 /// Represents WG \[Peer\] section
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WgPeer {
     pub(crate) public_key: WgKey,
     pub(crate) allowed_ips: Vec<IpNetwork>,

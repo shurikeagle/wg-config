@@ -50,7 +50,7 @@ impl WgConf {
 
     /// Gets Interface settings from [`WgConf``] file
     ///
-    /// Note all the invalid lines and duplications will be ignored (the last duplication value will be got) without errors
+    /// Note all the not related to \[Interface\] key-values and duplications will be ignored (the last duplication value will be got) without errors
     pub fn interface(&mut self) -> Result<WgInterface, WgConfError> {
         if let Some(interface) = &self.cache.interface {
             return Ok(interface.clone());
@@ -331,6 +331,7 @@ pub struct WgConfPeers<'a> {
 impl Iterator for WgConfPeers<'_> {
     type Item = Result<WgPeer, WgConfError>;
 
+    /// Note all the not related to \[Peer\] key-values and duplications will be ignored (the last duplication value will be got) without errors
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(err) = &self.last_err {
             return Some(Err(err.to_owned()));
@@ -343,14 +344,20 @@ impl Iterator for WgConfPeers<'_> {
         }
 
         match self.next_peer_key_values() {
-            Ok(raw_key_values) => match WgPeer::from_raw_key_values(raw_key_values) {
-                Ok(peer) => Some(Ok(peer)),
-                Err(err) => {
-                    self.last_err = Some(err.clone());
-
-                    return Some(Err(err));
+            Ok(raw_key_values) => {
+                if raw_key_values.len() == 0 {
+                    return None;
                 }
-            },
+
+                match WgPeer::from_raw_key_values(raw_key_values) {
+                    Ok(peer) => Some(Ok(peer)),
+                    Err(err) => {
+                        self.last_err = Some(err.clone());
+
+                        return Some(Err(err));
+                    }
+                }
+            }
             Err(err) => {
                 self.last_err = Some(err.clone());
 
@@ -659,22 +666,22 @@ PrivateKey
     }
 
     #[test]
-    fn peers_0_common_scenario() {
+    fn peers_iter_0_common_scenario() {
         // Arrange
         const TEST_CONF_FILE: &str = "wg8.conf";
         let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT;
 
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
         let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+        let mut peers_iter = wg_conf.peers().unwrap();
 
-        // Act & Assert
-        let peers_iter = wg_conf.peers();
-        assert!(peers_iter.is_ok());
+        // Act
+        let peer1 = peers_iter.next();
+        let peer2 = peers_iter.next();
+        let peer3 = peers_iter.next();
 
-        let mut peers_iter = peers_iter.unwrap();
-
-        let next_peer = peers_iter.next();
-        match next_peer {
+        // Assert
+        match peer1 {
             Some(peer) => {
                 assert!(peer.is_ok());
                 let peer = peer.unwrap();
@@ -689,8 +696,89 @@ PrivateKey
                 assert!(peer.persistent_keepalive.is_none());
                 assert!(peer.dns.is_none());
             }
-            None => panic!("Couldn't find the first peer"),
+            None => panic!("Couldn't get the first peer"),
         }
+
+        match peer2 {
+            Some(peer) => {
+                assert!(peer.is_ok());
+                let peer = peer.unwrap();
+
+                assert_eq!(
+                    "Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=",
+                    peer.public_key.to_string()
+                );
+                assert_eq!(2, peer.allowed_ips.len());
+                assert_eq!("10.0.0.3/32", peer.allowed_ips[0].to_string());
+                assert_eq!("10.0.0.4/32", peer.allowed_ips[1].to_string());
+                assert!(peer.preshared_key.is_some());
+                assert_eq!(
+                    "4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=",
+                    peer.preshared_key.unwrap().to_string()
+                );
+                assert!(peer.persistent_keepalive.is_some());
+                assert_eq!(25, peer.persistent_keepalive.unwrap());
+                assert!(peer.dns.is_some());
+                assert_eq!("8.8.8.8", peer.dns.unwrap().to_string());
+            }
+            None => panic!("Couldn't get the second peer"),
+        }
+
+        assert!(peer3.is_none());
+    }
+
+    #[test]
+    fn peers_iter_0_no_peers_0_returns_no_err() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg9.conf";
+        let content = INTERFACE_CONTENT.to_string();
+
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
+        let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+        let mut peers_iter = wg_conf.peers().unwrap();
+
+        // Act
+        let peer = peers_iter.next();
+
+        // Assert
+        assert!(peer.is_none());
+    }
+
+    #[test]
+    fn peers_iter_0_every_iter_0_keeps_same_error() {
+        // Arrange
+        const BAD_AND_GOOD_PEER_CONTENT: &'static str = "[Peer]
+PublicKey = NotWGkey=
+AllowedIPs = 10.0.0.2/32
+
+[Peer]
+PublicKey = Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=
+AllowedIPs = 10.0.0.3/32, 10.0.0.4/32
+PresharedKey = 4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=
+PersistentKeepalive = 25
+DNS = 8.8.8.8
+";
+        const TEST_CONF_FILE: &str = "wg10.conf";
+        let content = INTERFACE_CONTENT.to_string() + "\n" + BAD_AND_GOOD_PEER_CONTENT;
+
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
+        let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+        let mut peers_iter = wg_conf.peers().unwrap();
+
+        // Act
+        let peer = peers_iter.next();
+        let peer2 = peers_iter.next();
+
+        // Assert
+        assert!(peer.is_some());
+        let peer = peer.unwrap();
+        assert!(peer.is_err());
+        assert_eq!(WgConfErrKind::ValidationFailed, peer.unwrap_err().kind());
+
+        assert!(peer2.is_some());
+        let peer2 = peer2.unwrap();
+        assert!(peer2.is_err());
+        assert_eq!(WgConfErrKind::ValidationFailed, peer2.unwrap_err().kind());
     }
 
     fn prepare_test_conf(conf_name: &'static str, content: &str) -> Deferred {
