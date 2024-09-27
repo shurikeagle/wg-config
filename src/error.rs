@@ -21,6 +21,19 @@ pub enum WgConfError {
     CriticalKeepTmp(String),
 }
 
+impl Clone for WgConfError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Unexpected(arg0) => Self::Unexpected(arg0.clone()),
+            Self::NotFound(arg0) => Self::NotFound(arg0.clone()),
+            Self::NotWgConfig(arg0) => Self::NotWgConfig(arg0.clone()),
+            Self::ValidationFailed(arg0) => Self::ValidationFailed(arg0.clone()),
+            Self::CouldntUpdateInterface(arg0) => Self::CouldntUpdateInterface(arg0.clone()),
+            Self::CriticalKeepTmp(arg0) => Self::CriticalKeepTmp(arg0.clone()),
+        }
+    }
+}
+
 impl WgConfError {
     pub fn kind(&self) -> WgConfErrKind {
         match self {

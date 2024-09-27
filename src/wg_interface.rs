@@ -112,6 +112,23 @@ impl WgInterface {
         })
     }
 
+    // getters
+    pub fn private_key(&self) -> &WgKey {
+        &self.private_key
+    }
+    pub fn address(&self) -> &IpNetwork {
+        &self.address
+    }
+    pub fn listen_port(&self) -> u16 {
+        self.listen_port
+    }
+    pub fn post_up(&self) -> Option<&str> {
+        self.post_up.as_deref()
+    }
+    pub fn post_down(&self) -> Option<&str> {
+        self.post_down.as_deref()
+    }
+
     pub(crate) fn from_raw_key_values(
         raw_key_values: HashMap<String, String>,
     ) -> Result<WgInterface, WgConfError> {
@@ -133,23 +150,6 @@ impl WgInterface {
         }
 
         WgInterface::from_raw_values(private_key, address, listen_port, post_up, post_down)
-    }
-
-    // getters
-    pub fn private_key(&self) -> &WgKey {
-        &self.private_key
-    }
-    pub fn address(&self) -> &IpNetwork {
-        &self.address
-    }
-    pub fn listen_port(&self) -> u16 {
-        self.listen_port
-    }
-    pub fn post_up(&self) -> Option<&str> {
-        self.post_up.as_deref()
-    }
-    pub fn post_down(&self) -> Option<&str> {
-        self.post_down.as_deref()
     }
 }
 

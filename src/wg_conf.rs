@@ -2,11 +2,11 @@ use std::{
     collections::HashMap,
     ffi::OsStr,
     fs::{self, File, OpenOptions},
-    io::{self, BufRead, BufReader, ErrorKind, Seek, SeekFrom, Write},
+    io::{self, BufRead, BufReader, ErrorKind, Lines, Seek, SeekFrom, Write},
     path::Path,
 };
 
-use crate::{error::WgConfError, wg_interface, wg_peer, WgConfErrKind, WgInterface};
+use crate::{error::WgConfError, wg_interface, wg_peer, WgConfErrKind, WgInterface, WgPeer};
 
 const CONF_EXTENSION: &'static str = "conf";
 
@@ -75,6 +75,26 @@ impl WgConf {
         self.update_interface_in_file(new_inteface)
     }
 
+    /// Returns iterator over WG config Peers
+    pub fn peers(&mut self) -> Result<WgConfPeers, WgConfError> {
+        let peer_start_pos = self.peer_start_position(false)?;
+
+        self.conf_file
+            .seek(SeekFrom::Start(peer_start_pos))
+            .map_err(|err| {
+                WgConfError::Unexpected(format!(
+                    "Couldn't set cursor to [Peer] start position: {err}"
+                ))
+            })?;
+
+        Ok(WgConfPeers {
+            lines: BufReader::new(&mut self.conf_file).lines(),
+            next_peer_exist: false,
+            first_iteration: true,
+            last_err: None,
+        })
+    }
+
     /// Closes [`WgConf`] underlying file
     pub fn close(self) {
         // nothing happens, just moving the variable like in a drop func
@@ -83,7 +103,7 @@ impl WgConf {
     fn interface_key_values_from_file(&mut self) -> Result<HashMap<String, String>, WgConfError> {
         seek_to_start(&mut self.conf_file, "Couldn't get interface section")?;
 
-        let mut kv: HashMap<String, String> = HashMap::with_capacity(10);
+        let mut raw_key_values: HashMap<String, String> = HashMap::with_capacity(10);
 
         let mut lines_iter = BufReader::new(&mut self.conf_file).lines();
 
@@ -94,6 +114,7 @@ impl WgConf {
                     cur_position += line.len();
 
                     let line = line.trim().to_owned();
+                    // Skip comments and empty lines
                     if line == "" || line.starts_with("#") || line == wg_interface::INTERFACE_TAG {
                         continue;
                     }
@@ -105,7 +126,7 @@ impl WgConf {
                     }
 
                     let (k, v) = key_value_from_raw_string(&line)?;
-                    let _ = kv.insert(k, v);
+                    let _ = raw_key_values.insert(k, v);
                 }
                 Err(err) => {
                     let _ = seek_to_start(&mut self.conf_file, "Couldn't get interface section");
@@ -120,7 +141,7 @@ impl WgConf {
 
         let _ = seek_to_start(&mut self.conf_file, "");
 
-        Ok(kv)
+        Ok(raw_key_values)
     }
 
     fn update_interface_in_file(mut self, interface: WgInterface) -> Result<WgConf, WgConfError> {
@@ -298,6 +319,99 @@ pub fn check_if_wg_conf(file_name: &str, file: &mut File) -> Result<(), WgConfEr
     res
 }
 
+/// Iterator over WgConf \[Peer\]s
+pub struct WgConfPeers<'a> {
+    lines: Lines<BufReader<&'a mut File>>,
+    next_peer_exist: bool,
+    first_iteration: bool,
+    last_err: Option<WgConfError>,
+}
+
+impl Iterator for WgConfPeers<'_> {
+    type Item = Result<WgPeer, WgConfError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(err) = &self.last_err {
+            return Some(Err(err.to_owned()));
+        }
+
+        // If we realized, that the next peer is not exist during the previous
+        // iteration, return None
+        if !self.first_iteration && !self.next_peer_exist {
+            return None;
+        }
+
+        match self.next_peer_key_values() {
+            Ok(raw_key_values) => match WgPeer::from_raw_key_values(raw_key_values) {
+                Ok(peer) => Some(Ok(peer)),
+                Err(err) => {
+                    self.last_err = Some(err.clone());
+
+                    return Some(Err(err));
+                }
+            },
+            Err(err) => {
+                self.last_err = Some(err.clone());
+
+                Some(Err(err))
+            }
+        }
+    }
+}
+
+impl WgConfPeers<'_> {
+    fn next_peer_key_values(&mut self) -> Result<HashMap<String, String>, WgConfError> {
+        let mut raw_key_values: HashMap<String, String> = HashMap::with_capacity(10);
+
+        self.next_peer_exist = false;
+
+        while let Some(line) = self.lines.next() {
+            match line {
+                Ok(line) => {
+                    let line = line.trim().to_owned();
+                    // Skip comments and empty lines
+                    if line == "" || line.starts_with("#") {
+                        continue;
+                    }
+
+                    if line == wg_peer::PEER_TAG {
+                        // current section's peer tag will be found only in the first iteration,
+                        // in the next iteration the coursor position will be after it as it was read in the prev iteration,
+                        // so, in all iterations except the frst one peer tag means the end of the current iteration
+                        if self.first_iteration {
+                            continue;
+                        } else {
+                            self.next_peer_exist = true;
+                            break;
+                        }
+                    }
+
+                    self.first_iteration = false;
+
+                    match key_value_from_raw_string(&line) {
+                        Ok((k, v)) => {
+                            let _ = raw_key_values.insert(k, v);
+                        }
+                        Err(err) => {
+                            self.last_err = Some(err.clone());
+
+                            return Err(err);
+                        }
+                    }
+                }
+                Err(err) => {
+                    let err = WgConfError::Unexpected(format!("Couldn't read next peer: {err}"));
+                    self.last_err = Some(err.clone());
+
+                    return Err(err);
+                }
+            }
+        }
+
+        Ok(raw_key_values)
+    }
+}
+
 fn open_conf_file(file_name: &str) -> Result<File, WgConfError> {
     OpenOptions::new()
         .read(true)
@@ -355,7 +469,10 @@ AllowedIPs = 10.0.0.2/32
 
 [Peer]
 PublicKey = Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=
-AllowedIPs = 10.0.0.3/32
+AllowedIPs = 10.0.0.3/32, 10.0.0.4/32
+PresharedKey = 4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=
+PersistentKeepalive = 25
+DNS = 8.8.8.8
 ";
 
     struct Deferred(pub Box<dyn Fn() -> ()>);
@@ -538,6 +655,41 @@ PrivateKey
         assert!(interface_by_method.is_ok());
         let interface_by_method = interface_by_method.unwrap();
         assert_eq!(new_interface, interface_by_method);
+    }
+
+    #[test]
+    fn peers_0_common_scenario() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg8.conf";
+        let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT;
+
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
+        let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+
+        // Act & Assert
+        let peers_iter = wg_conf.peers();
+        assert!(peers_iter.is_ok());
+
+        let mut peers_iter = peers_iter.unwrap();
+
+        let next_peer = peers_iter.next();
+        match next_peer {
+            Some(peer) => {
+                assert!(peer.is_ok());
+                let peer = peer.unwrap();
+
+                assert_eq!(
+                    "LyXP6s7mzMlrlcZ5STONcPwTQFOUJuD8yQg6FYDeTzE=",
+                    peer.public_key.to_string()
+                );
+                assert_eq!(1, peer.allowed_ips.len());
+                assert_eq!("10.0.0.2/32", peer.allowed_ips[0].to_string());
+                assert!(peer.preshared_key.is_none());
+                assert!(peer.persistent_keepalive.is_none());
+                assert!(peer.dns.is_none());
+            }
+            None => panic!("Couldn't find the first peer"),
+        }
     }
 
     fn prepare_test_conf(conf_name: &'static str, content: &str) -> Deferred {

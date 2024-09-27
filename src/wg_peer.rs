@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::{collections::HashMap, net::IpAddr};
 
 use ipnetwork::IpNetwork;
 
@@ -154,6 +154,40 @@ impl WgPeer {
     }
     pub fn dns(&self) -> Option<&IpAddr> {
         self.dns.as_ref()
+    }
+
+    pub(crate) fn from_raw_key_values(
+        raw_key_values: HashMap<String, String>,
+    ) -> Result<WgPeer, WgConfError> {
+        let mut public_key = String::new();
+        let mut allowed_ips = Vec::<String>::new();
+        let mut preshared_key: Option<String> = None;
+        let mut persistent_keepalive: Option<String> = None;
+        let mut dns: Option<String> = None;
+
+        for (k, v) in raw_key_values {
+            match k {
+                _ if k == PUBLIC_KEY => public_key = v,
+                _ if k == ALLOWED_IPS => {
+                    let ips: Vec<&str> = v.split(", ").collect();
+                    for ip in ips {
+                        allowed_ips.push(ip.to_string());
+                    }
+                }
+                _ if k == PRESHARED_KEY => preshared_key = Some(v),
+                _ if k == PERSISTENT_KEEPALIVE => persistent_keepalive = Some(v),
+                _ if k == DNS => dns = Some(v),
+                _ => continue,
+            }
+        }
+
+        WgPeer::from_raw_values(
+            public_key,
+            allowed_ips,
+            preshared_key,
+            persistent_keepalive,
+            dns,
+        )
     }
 }
 
