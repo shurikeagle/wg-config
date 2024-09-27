@@ -95,6 +95,22 @@ impl WgConf {
         })
     }
 
+    /// Adds \[Peer\] to WG config file
+    pub fn add_peer(&mut self, peer: WgPeer) -> Result<(), WgConfError> {
+        self.conf_file.seek(SeekFrom::End(0)).map_err(|err| {
+            WgConfError::Unexpected(format!("Couldn't set cursor to the end of the file: {err}"))
+        })?;
+
+        let content = peer.to_string() + "\n";
+        self.conf_file
+            .write_all(content.as_bytes())
+            .map_err(|err| {
+                WgConfError::Unexpected(format!("Couldn't write peer to the file: {err}"))
+            })?;
+
+        Ok(())
+    }
+
     /// Closes [`WgConf`] underlying file
     pub fn close(self) {
         // nothing happens, just moving the variable like in a drop func
@@ -779,6 +795,43 @@ DNS = 8.8.8.8
         let peer2 = peer2.unwrap();
         assert!(peer2.is_err());
         assert_eq!(WgConfErrKind::ValidationFailed, peer2.unwrap_err().kind());
+    }
+
+    #[test]
+    fn add_peer_0_common_scenario() {
+        // Arrange
+        let peer = WgPeer::new(
+            "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
+                .parse()
+                .unwrap(),
+            vec!["10.0.0.1/32".parse().unwrap()],
+            Some(
+                "6FyM4Sq5zanp+9UOXIygLJQBYvlLsfF5lYcrSoa3CX8="
+                    .parse()
+                    .unwrap(),
+            ),
+            Some(25),
+            Some("8.8.8.8".parse().unwrap()),
+        );
+
+        const TEST_CONF_FILE: &str = "wg11.conf";
+        let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
+
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
+        let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+
+        // Act
+        let res = wg_conf.add_peer(peer.clone());
+        let count = wg_conf.peers().unwrap().count();
+        let last_peer = wg_conf.peers().unwrap().last();
+
+        // Assert
+        assert!(res.is_ok());
+        assert_eq!(3, count);
+        assert!(last_peer.is_some());
+        let last_peer = last_peer.unwrap();
+        assert!(last_peer.is_ok());
+        assert_eq!(peer, last_peer.unwrap());
     }
 
     fn prepare_test_conf(conf_name: &'static str, content: &str) -> Deferred {
