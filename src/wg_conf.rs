@@ -111,7 +111,7 @@ impl WgConf {
         while let Some(line) = lines_iter.next() {
             match line {
                 Ok(line) => {
-                    cur_position += line.len();
+                    cur_position += line.len() + 1; // +1 for EOL
 
                     let line = line.trim().to_owned();
                     // Skip comments and empty lines
@@ -121,7 +121,7 @@ impl WgConf {
 
                     // Stop when the first [Peer] will be reached
                     if line == wg_peer::PEER_TAG {
-                        cur_position = cur_position - wg_peer::PEER_TAG.len() - 1;
+                        cur_position = cur_position - wg_peer::PEER_TAG.len() - 1; // -1 for EOL
                         break;
                     }
 
@@ -160,8 +160,9 @@ impl WgConf {
             })?;
 
         // write new interface section into tmp
+        let interface_to_write = interface.to_string() + "\n";
         tmp_file
-            .write_all(interface.to_string().as_bytes())
+            .write_all(interface_to_write.as_bytes())
             .map_err(|err| {
                 let _ = fs::remove_file(&tmp_file_name);
 
@@ -173,7 +174,7 @@ impl WgConf {
             })?;
 
         // define new Peer position to set it into the cache if update will be successfull
-        let updated_peer_start_pos = interface.to_string().len() as u64;
+        let updated_peer_start_pos = interface_to_write.len() as u64 + 1;
 
         // copy peers from current conf file to dst
         self.copy_peers(&mut tmp_file).map_err(|err| {
@@ -259,11 +260,11 @@ impl WgConf {
         while let Some(line) = lines_iter.next() {
             match line {
                 Ok(line) => {
-                    cur_position += line.len();
+                    cur_position += line.len() + 1; // +1 for EOL
 
                     // Stop when the first [Peer] will be reached
                     if line == wg_peer::PEER_TAG {
-                        cur_position = cur_position - wg_peer::PEER_TAG.len() - 1;
+                        cur_position = cur_position - wg_peer::PEER_TAG.len() - 1; // -1 for EOL
                         break;
                     }
                 }
