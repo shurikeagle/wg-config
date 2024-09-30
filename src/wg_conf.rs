@@ -1,21 +1,23 @@
 use std::{
     collections::HashMap,
     ffi::OsStr,
-    fs::{self, File, OpenOptions},
-    io::{self, BufRead, BufReader, ErrorKind, Lines, Seek, SeekFrom, Write},
+    fs::{self, File},
+    io::{self, BufRead, BufReader, Lines, Seek, SeekFrom, Write},
     path::Path,
 };
 
-use crate::{error::WgConfError, wg_interface, wg_peer, WgConfErrKind, WgInterface, WgPeer};
+use crate::{
+    error::WgConfError, fileworks, wg_interface, wg_peer, WgConfErrKind, WgInterface, WgKey, WgPeer,
+};
 
 const CONF_EXTENSION: &'static str = "conf";
 
-// TODO: Add mutex maybe (one need to think about some better solution)
+// TODO: Add process-safety mechanism (think about some optimistic concurrency approach or add OS mutex at least)
 
 /// Represents WG configuration file
 #[derive(Debug)]
 pub struct WgConf {
-    file_name: String,
+    conf_file_name: String,
     conf_file: File,
     cache: WgConfCache,
 }
@@ -26,6 +28,7 @@ struct WgConfCache {
     peer_start_pos: Option<u64>,
 }
 
+// TODO: Create WgConf
 impl WgConf {
     /// Initializes [`WgConf``] from existing file
     ///
@@ -34,12 +37,12 @@ impl WgConf {
     /// Note, that [`WgConf`] always keeps the underlying config file open till the end of ownership
     /// or untill drop() or WgConf.close() invoked
     pub fn open(file_name: &str) -> Result<WgConf, WgConfError> {
-        let mut file = open_conf_file(file_name)?;
+        let mut file = fileworks::open_file_w_all_permissions(file_name)?;
 
         check_if_wg_conf(file_name, &mut file)?;
 
         Ok(WgConf {
-            file_name: file_name.to_owned(),
+            conf_file_name: file_name.to_owned(),
             conf_file: file,
             cache: WgConfCache {
                 interface: None,
@@ -77,10 +80,10 @@ impl WgConf {
 
     /// Returns iterator over WG config Peers
     pub fn peers(&mut self) -> Result<WgConfPeers, WgConfError> {
-        let peer_start_pos = self.peer_start_position(false)?;
+        let peer_start_position = self.peer_start_position(false)?;
 
         self.conf_file
-            .seek(SeekFrom::Start(peer_start_pos))
+            .seek(SeekFrom::Start(peer_start_position))
             .map_err(|err| {
                 WgConfError::Unexpected(format!(
                     "Couldn't set cursor to [Peer] start position: {err}"
@@ -88,10 +91,14 @@ impl WgConf {
             })?;
 
         Ok(WgConfPeers {
+            last_err: None,
             lines: BufReader::new(&mut self.conf_file).lines(),
             next_peer_exist: false,
             first_iteration: true,
-            last_err: None,
+            peer_start_position,
+            cur_position: peer_start_position,
+            cur_peer_start_position: None,
+            cur_peer_end_position: None,
         })
     }
 
@@ -111,13 +118,72 @@ impl WgConf {
         Ok(())
     }
 
+    pub fn remove_peer_by_pub_key(mut self, public_key: &WgKey) -> Result<WgConf, WgConfError> {
+        // TODO: This func breakes file while deleting tha last peer, one need to fix
+        let mut peers = self.peers()?;
+
+        // find target peer
+        let _ = peers
+            .find(|p| !p.is_err() && p.as_ref().unwrap().public_key() == public_key)
+            .ok_or(WgConfError::NotFound(format!(
+                "Peer with public key '{}'",
+                public_key.to_string()
+            )))?;
+
+        // as target peer found, iterator sets current peer's start & end positions
+        let start_peer_pos = peers
+            .cur_peer_start_position
+            .ok_or(WgConfError::Unexpected(
+                "Couldn't define target peer start position".to_string(),
+            ))?;
+        let end_peer_pos = peers.cur_peer_end_position.ok_or(WgConfError::Unexpected(
+            "Couldn't define target peer end position".to_string(),
+        ))?;
+
+        drop(peers);
+
+        let (tmp_file_name, mut tmp_file) = fileworks::create_tmp_file(&self.conf_file_name)?;
+
+        let _ = fileworks::copy_bytes_except(
+            &mut self.conf_file,
+            &mut tmp_file,
+            start_peer_pos,
+            end_peer_pos,
+            "Couldn't copy config file to tmp",
+        )
+        .map_err(|err| {
+            let _ = fs::remove_file(&tmp_file_name);
+
+            err
+        })?;
+
+        let new_wg_conf_file = fileworks::replace_file(
+            tmp_file,
+            &tmp_file_name,
+            self.conf_file,
+            &self.conf_file_name,
+        )
+        .map_err(|err| {
+            // keep tmp file if main file was already deleted
+            if err.kind() != WgConfErrKind::CriticalKeepTmp {
+                let _ = fs::remove_file(&tmp_file_name);
+            }
+
+            err
+        })?;
+
+        self.conf_file = new_wg_conf_file;
+
+        Ok(self)
+    }
+
     /// Closes [`WgConf`] underlying file
     pub fn close(self) {
         // nothing happens, just moving the variable like in a drop func
     }
 
     fn interface_key_values_from_file(&mut self) -> Result<HashMap<String, String>, WgConfError> {
-        seek_to_start(&mut self.conf_file, "Couldn't get interface section")?;
+        fileworks::seek_to_start(&mut self.conf_file, "Couldn't get interface section")?;
 
         let mut raw_key_values: HashMap<String, String> = HashMap::with_capacity(10);
 
@@ -145,7 +211,10 @@ impl WgConf {
                     let _ = raw_key_values.insert(k, v);
                 }
                 Err(err) => {
-                    let _ = seek_to_start(&mut self.conf_file, "Couldn't get interface section");
+                    let _ = fileworks::seek_to_start(
+                        &mut self.conf_file,
+                        "Couldn't get interface section",
+                    );
                     return Err(WgConfError::Unexpected(format!(
                         "Couldn't read interface: {err}"
                     )));
@@ -155,25 +224,13 @@ impl WgConf {
 
         self.cache.peer_start_pos = Some(cur_position as u64);
 
-        let _ = seek_to_start(&mut self.conf_file, "");
+        let _ = fileworks::seek_to_start(&mut self.conf_file, "");
 
         Ok(raw_key_values)
     }
 
     fn update_interface_in_file(mut self, interface: WgInterface) -> Result<WgConf, WgConfError> {
-        let conf_file_name = self.file_name.clone();
-        let tmp_file_name = conf_file_name + ".tmp";
-        let mut tmp_file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&tmp_file_name)
-            .map_err(|err| {
-                WgConfError::Unexpected(format!(
-                    "Couldn't create {}: {}",
-                    &tmp_file_name,
-                    err.to_string()
-                ))
-            })?;
+        let (tmp_file_name, mut tmp_file) = fileworks::create_tmp_file(&self.conf_file_name)?;
 
         // write new interface section into tmp
         let interface_to_write = interface.to_string() + "\n";
@@ -200,20 +257,26 @@ impl WgConf {
         })?;
 
         // replace conf by tmp
-        let mut updated_conf = self
-            .replace_conf_file(tmp_file, &tmp_file_name)
-            .map_err(|err| {
-                // keep tmp file if main file was already deleted
-                if err.kind() != WgConfErrKind::CriticalKeepTmp {
-                    let _ = fs::remove_file(&tmp_file_name);
-                }
+        let new_wg_conf_file = fileworks::replace_file(
+            tmp_file,
+            &tmp_file_name,
+            self.conf_file,
+            &self.conf_file_name,
+        )
+        .map_err(|err| {
+            // keep tmp file if main file was already deleted
+            if err.kind() != WgConfErrKind::CriticalKeepTmp {
+                let _ = fs::remove_file(&tmp_file_name);
+            }
 
-                err
-            })?;
-        updated_conf.cache.interface = Some(interface);
-        updated_conf.cache.peer_start_pos = Some(updated_peer_start_pos);
+            err
+        })?;
 
-        Ok(updated_conf)
+        self.conf_file = new_wg_conf_file;
+        self.cache.interface = Some(interface);
+        self.cache.peer_start_pos = Some(updated_peer_start_pos);
+
+        Ok(self)
     }
 
     fn copy_peers(&mut self, mut dst_file: &File) -> Result<(), WgConfError> {
@@ -235,32 +298,6 @@ impl WgConf {
         Ok(())
     }
 
-    fn replace_conf_file(
-        mut self,
-        new_conf_file: File,
-        new_conf_file_tmp_name: &str,
-    ) -> Result<WgConf, WgConfError> {
-        drop(self.conf_file);
-        drop(new_conf_file);
-
-        fs::remove_file(&self.file_name).map_err(|err| {
-            WgConfError::Unexpected(format!(
-                "Couldn't replace {} by tmp: {}",
-                &self.file_name,
-                err.to_string()
-            ))
-        })?;
-
-        fs::rename(new_conf_file_tmp_name, &self.file_name).map_err(|err| {
-            WgConfError::CriticalKeepTmp(format!("Couldn't rename tmp file: {}", err.to_string()))
-        })?;
-
-        let new_file = open_conf_file(&self.file_name)?;
-        self.conf_file = new_file;
-
-        Ok(self)
-    }
-
     fn peer_start_position(&mut self, ingore_cache: bool) -> Result<u64, WgConfError> {
         if let Some(start_pos) = self.cache.peer_start_pos {
             if !ingore_cache {
@@ -268,7 +305,7 @@ impl WgConf {
             }
         }
 
-        seek_to_start(&mut self.conf_file, "Couldn't get peer start position")?;
+        fileworks::seek_to_start(&mut self.conf_file, "Couldn't get peer start position")?;
 
         let mut lines_iter = BufReader::new(&mut self.conf_file).lines();
 
@@ -285,7 +322,10 @@ impl WgConf {
                     }
                 }
                 Err(err) => {
-                    let _ = seek_to_start(&mut self.conf_file, "Couldn't get peer start position");
+                    let _ = fileworks::seek_to_start(
+                        &mut self.conf_file,
+                        "Couldn't get peer start position",
+                    );
                     return Err(WgConfError::Unexpected(format!(
                         "Couldn't read up to peer start position: {err}"
                     )));
@@ -296,52 +336,22 @@ impl WgConf {
         let cur_position = cur_position as u64;
         self.cache.peer_start_pos = Some(cur_position);
 
-        let _ = seek_to_start(&mut self.conf_file, "");
+        let _ = fileworks::seek_to_start(&mut self.conf_file, "");
 
         Ok(cur_position)
     }
 }
 
-/// Checks if provided file is WG config
-///
-/// Returns [`WgConfError::NotWgConfig`] if checks failed
-pub fn check_if_wg_conf(file_name: &str, file: &mut File) -> Result<(), WgConfError> {
-    const ERR_MSG: &'static str = "Couldn't define if file is WG config";
-
-    if Path::new(file_name).extension().unwrap_or(&OsStr::new("")) != CONF_EXTENSION {
-        return Err(WgConfError::NotWgConfig("invalid extension".to_string()));
-    }
-
-    seek_to_start(file, ERR_MSG)?;
-
-    let mut lines_iter = BufReader::new(&mut *file).lines();
-    let res = match lines_iter.next() {
-        Some(first_line) => {
-            if first_line.map_err(|err| {
-                WgConfError::Unexpected(format!("{}: {}", ERR_MSG, err.to_string()))
-            })? == wg_interface::INTERFACE_TAG
-            {
-                Ok(())
-            } else {
-                Err(WgConfError::NotWgConfig(
-                    "couldn't find [Interface] section".to_string(),
-                ))
-            }
-        }
-        None => Err(WgConfError::NotWgConfig("file is empty".to_string())),
-    };
-
-    seek_to_start(file, ERR_MSG)?;
-
-    res
-}
-
 /// Iterator over WgConf \[Peer\]s
 pub struct WgConfPeers<'a> {
+    last_err: Option<WgConfError>,
     lines: Lines<BufReader<&'a mut File>>,
     next_peer_exist: bool,
     first_iteration: bool,
-    last_err: Option<WgConfError>,
+    peer_start_position: u64,
+    cur_position: u64,
+    cur_peer_start_position: Option<u64>,
+    cur_peer_end_position: Option<u64>,
 }
 
 impl Iterator for WgConfPeers<'_> {
@@ -389,9 +399,16 @@ impl WgConfPeers<'_> {
 
         self.next_peer_exist = false;
 
+        if !self.first_iteration {
+            self.cur_peer_start_position = Some(self.cur_position + 1);
+        }
+
+        // TODO: This code freezes infinitly if file contains invalid Peer tag (like 'Peer]'), one should to fix
         while let Some(line) = self.lines.next() {
             match line {
                 Ok(line) => {
+                    self.cur_position += line.len() as u64 + 1; // +1 for EOL
+
                     let line = line.trim().to_owned();
                     // Skip comments and empty lines
                     if line == "" || line.starts_with("#") {
@@ -403,8 +420,11 @@ impl WgConfPeers<'_> {
                         // in the next iteration the coursor position will be after it as it was read in the prev iteration,
                         // so, in all iterations except the frst one peer tag means the end of the current iteration
                         if self.first_iteration {
+                            self.cur_peer_start_position = Some(self.peer_start_position);
                             continue;
                         } else {
+                            self.cur_peer_end_position =
+                                Some(self.cur_position - wg_peer::PEER_TAG.len() as u64 - 1); // -1 for EOL
                             self.next_peer_exist = true;
                             break;
                         }
@@ -432,27 +452,46 @@ impl WgConfPeers<'_> {
             }
         }
 
+        if !self.next_peer_exist {
+            self.cur_peer_end_position = Some(self.cur_position);
+        }
+
         Ok(raw_key_values)
     }
 }
 
-fn open_conf_file(file_name: &str) -> Result<File, WgConfError> {
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .append(true)
-        .open(file_name)
-        .map_err(|err| match err.kind() {
-            ErrorKind::NotFound => WgConfError::NotFound(file_name.to_string()),
-            _ => WgConfError::Unexpected(err.to_string()),
-        })
-}
+/// Checks if provided file is WG config
+///
+/// Returns [`WgConfError::NotWgConfig`] if checks failed
+pub fn check_if_wg_conf(file_name: &str, file: &mut File) -> Result<(), WgConfError> {
+    const ERR_MSG: &'static str = "Couldn't define if file is WG config";
 
-fn seek_to_start(file: &mut File, err_msg: &str) -> Result<(), WgConfError> {
-    file.seek(std::io::SeekFrom::Start(0))
-        .map_err(|err| WgConfError::Unexpected(format!("{}: {}", err_msg, err.to_string())))?;
+    if Path::new(file_name).extension().unwrap_or(&OsStr::new("")) != CONF_EXTENSION {
+        return Err(WgConfError::NotWgConfig("invalid extension".to_string()));
+    }
 
-    Ok(())
+    fileworks::seek_to_start(file, ERR_MSG)?;
+
+    let mut lines_iter = BufReader::new(&mut *file).lines();
+    let res = match lines_iter.next() {
+        Some(first_line) => {
+            if first_line.map_err(|err| {
+                WgConfError::Unexpected(format!("{}: {}", ERR_MSG, err.to_string()))
+            })? == wg_interface::INTERFACE_TAG
+            {
+                Ok(())
+            } else {
+                Err(WgConfError::NotWgConfig(
+                    "couldn't find [Interface] section".to_string(),
+                ))
+            }
+        }
+        None => Err(WgConfError::NotWgConfig("file is empty".to_string())),
+    };
+
+    fileworks::seek_to_start(file, ERR_MSG)?;
+
+    res
 }
 
 fn key_value_from_raw_string(raw_string: &str) -> Result<(String, String), WgConfError> {
@@ -832,6 +871,100 @@ DNS = 8.8.8.8
         let last_peer = last_peer.unwrap();
         assert!(last_peer.is_ok());
         assert_eq!(peer, last_peer.unwrap());
+    }
+
+    #[test]
+    fn remove_peer_by_pub_key_0_first_peer() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg12.conf";
+        let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
+
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
+        let wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+        let target_key: WgKey = "LyXP6s7mzMlrlcZ5STONcPwTQFOUJuD8yQg6FYDeTzE="
+            .parse()
+            .unwrap();
+
+        // Act & Assert
+        let res = wg_conf.remove_peer_by_pub_key(&target_key);
+        assert!(res.is_ok());
+
+        let mut wg_conf = res.unwrap();
+
+        let mut peers_iter = wg_conf.peers().unwrap();
+        let existing_peer = peers_iter.next();
+        match existing_peer {
+            Some(peer) => {
+                assert!(peer.is_ok());
+                let peer = peer.unwrap();
+
+                assert_eq!(
+                    "Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=",
+                    peer.public_key.to_string()
+                );
+                assert_eq!(2, peer.allowed_ips.len());
+                assert_eq!("10.0.0.3/32", peer.allowed_ips[0].to_string());
+                assert_eq!("10.0.0.4/32", peer.allowed_ips[1].to_string());
+                assert!(peer.preshared_key.is_some());
+                assert_eq!(
+                    "4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=",
+                    peer.preshared_key.unwrap().to_string()
+                );
+                assert!(peer.persistent_keepalive.is_some());
+                assert_eq!(25, peer.persistent_keepalive.unwrap());
+                assert!(peer.dns.is_some());
+                assert_eq!("8.8.8.8", peer.dns.unwrap().to_string());
+            }
+            None => panic!("Couldn't get peer after removing the previous one"),
+        }
+
+        assert!(peers_iter.next().is_none());
+    }
+
+    #[test]
+    fn remove_peer_by_pub_key_0_last_peer() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg13.conf";
+        let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
+
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
+        let wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+        let target_key: WgKey = "Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4="
+            .parse()
+            .unwrap();
+
+        // Act & Assert
+        let res = wg_conf.remove_peer_by_pub_key(&target_key);
+        assert!(res.is_ok());
+
+        let mut wg_conf = res.unwrap();
+
+        let mut peers_iter = wg_conf.peers().unwrap();
+        let existing_peer = peers_iter.next();
+        match existing_peer {
+            Some(peer) => {
+                assert!(peer.is_ok());
+                let peer = peer.unwrap();
+
+                assert_eq!(
+                    "LyXP6s7mzMlrlcZ5STONcPwTQFOUJuD8yQg6FYDeTzE=",
+                    peer.public_key.to_string()
+                );
+                assert_eq!(1, peer.allowed_ips.len());
+                assert_eq!("10.0.0.2/32", peer.allowed_ips[0].to_string());
+                assert!(peer.preshared_key.is_none());
+                assert!(peer.persistent_keepalive.is_none());
+                assert!(peer.dns.is_none());
+            }
+            None => panic!("Couldn't get peer after removing the previous one"),
+        }
+
+        assert!(peers_iter.next().is_none());
+    }
+
+    #[test]
+    fn remove_peer_by_pub_key_0_middle_peer() {
+        todo!("Implement")
     }
 
     fn prepare_test_conf(conf_name: &'static str, content: &str) -> Deferred {

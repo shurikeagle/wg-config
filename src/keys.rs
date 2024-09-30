@@ -7,7 +7,7 @@ use crate::WgConfError;
 /// WG key (private, public or preshared)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WgKey {
-    key: String,
+    pub(crate) key: String,
 }
 
 impl ToString for WgKey {

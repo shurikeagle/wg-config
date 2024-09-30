@@ -13,11 +13,17 @@ pub enum WgConfErrKind {
 
 #[derive(Debug)]
 pub enum WgConfError {
+    /// Unexpected error occurred
     Unexpected(String),
+    /// Instance not found
     NotFound(String),
+    /// Provided file is not WG config
     NotWgConfig(String),
+    /// Validation failed
     ValidationFailed(String),
+    /// Couldn't update interface for some reason
     CouldntUpdateInterface(String),
+    /// Some critical error occurred, config file was lost, actual config data is kept in .tmp file
     CriticalKeepTmp(String),
 }
 

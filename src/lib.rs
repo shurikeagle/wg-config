@@ -1,4 +1,5 @@
 mod error;
+mod fileworks;
 mod keys;
 mod wg_conf;
 mod wg_interface;
