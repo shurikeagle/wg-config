@@ -968,7 +968,79 @@ DNS = 8.8.8.8
 
     #[test]
     fn remove_peer_by_pub_key_0_middle_peer() {
-        todo!("Implement")
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg14.conf";
+
+        const ADDITIONAL_PEER: &str = "[Peer]
+PublicKey = 4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=
+AllowedIPs = 10.0.0.5/32
+PersistentKeepalive = 10
+DNS = 0.0.0.0
+";
+        let content =
+            INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n" + ADDITIONAL_PEER + "\n";
+
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
+        let wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+        let target_key: WgKey = "4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c="
+            .parse()
+            .unwrap();
+
+        // Act & Assert
+        let res = wg_conf.remove_peer_by_pub_key(&target_key);
+        assert!(res.is_ok());
+
+        let mut wg_conf = res.unwrap();
+
+        let mut peers_iter = wg_conf.peers().unwrap();
+        let peer1 = peers_iter.next();
+        let peer2 = peers_iter.next();
+        let peer3 = peers_iter.next();
+
+        match peer1 {
+            Some(peer) => {
+                assert!(peer.is_ok());
+                let peer = peer.unwrap();
+
+                assert_eq!(
+                    "LyXP6s7mzMlrlcZ5STONcPwTQFOUJuD8yQg6FYDeTzE=",
+                    peer.public_key.to_string()
+                );
+                assert_eq!(1, peer.allowed_ips.len());
+                assert_eq!("10.0.0.2/32", peer.allowed_ips[0].to_string());
+                assert!(peer.preshared_key.is_none());
+                assert!(peer.persistent_keepalive.is_none());
+                assert!(peer.dns.is_none());
+            }
+            None => panic!("Couldn't get peer after removing the previous one"),
+        }
+
+        match peer2 {
+            Some(peer) => {
+                assert!(peer.is_ok());
+                let peer = peer.unwrap();
+
+                assert_eq!(
+                    "Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=",
+                    peer.public_key.to_string()
+                );
+                assert_eq!(2, peer.allowed_ips.len());
+                assert_eq!("10.0.0.3/32", peer.allowed_ips[0].to_string());
+                assert_eq!("10.0.0.4/32", peer.allowed_ips[1].to_string());
+                assert!(peer.preshared_key.is_some());
+                assert_eq!(
+                    "4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=",
+                    peer.preshared_key.unwrap().to_string()
+                );
+                assert!(peer.persistent_keepalive.is_some());
+                assert_eq!(25, peer.persistent_keepalive.unwrap());
+                assert!(peer.dns.is_some());
+                assert_eq!("8.8.8.8", peer.dns.unwrap().to_string());
+            }
+            None => panic!("Couldn't get peer after removing the previous one"),
+        }
+
+        assert!(peer3.is_none());
     }
 
     fn prepare_test_conf(conf_name: &'static str, content: &str) -> Deferred {
