@@ -355,6 +355,7 @@ pub struct WgConfPeers<'a> {
 }
 
 impl Iterator for WgConfPeers<'_> {
+    // TODO: Return WgPeer instead. If there is some err, return None. For client to understand if it's err or EOF, add last_err getter.
     type Item = Result<WgPeer, WgConfError>;
 
     /// Note all the not related to \[Peer\] key-values and duplications will be ignored (the last duplication value will be got) without errors
@@ -400,10 +401,11 @@ impl WgConfPeers<'_> {
         self.next_peer_exist = false;
 
         if !self.first_iteration {
-            self.cur_peer_start_position = Some(self.cur_position + 1);
+            self.cur_peer_start_position =
+                Some(self.cur_position - wg_peer::PEER_TAG.len() as u64 - 1);
         }
 
-        // TODO: This code freezes infinitly if file contains invalid Peer tag (like 'Peer]'), one should to fix
+        // TODO: This code freezes infinitly if file contains invalid Peer tag (like 'Peer]'), one should to fix - return Err instead
         while let Some(line) = self.lines.next() {
             match line {
                 Ok(line) => {
@@ -718,6 +720,8 @@ PrivateKey
         assert!(interface_by_method.is_ok());
         let interface_by_method = interface_by_method.unwrap();
         assert_eq!(new_interface, interface_by_method);
+
+        // TODO: Add peer asserts
     }
 
     #[test]

@@ -15,7 +15,7 @@ pub(crate) fn copy_bytes_except(
 ) -> Result<(), WgConfError> {
     seek_to_start(src, parent_err_msg)?;
 
-    let mut all_up_to_peer = src.take(except_from + 1);
+    let mut all_up_to_peer = src.take(except_from);
     let _ = std::io::copy(&mut all_up_to_peer, dst).map_err(|err| {
         WgConfError::Unexpected(format!(
             "Couldn't copy config file to tmp: {}",
@@ -23,7 +23,7 @@ pub(crate) fn copy_bytes_except(
         ))
     })?;
 
-    src.seek(SeekFrom::Start(except_to + 1)).map_err(|err| {
+    src.seek(SeekFrom::Start(except_to)).map_err(|err| {
         WgConfError::Unexpected(format!(
             "Couldn't copy config file to tmp: {}",
             err.to_string()
