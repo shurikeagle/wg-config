@@ -12,7 +12,7 @@ use crate::{
 
 const CONF_EXTENSION: &'static str = "conf";
 
-// TODO: Add process-safety mechanism (think about some optimistic concurrency approach or add OS mutex at least)
+// TODO: Add process-safety mechanism (think about some optimistic concurrency approach or add OS lock at least)
 
 /// Represents WG configuration file
 #[derive(Debug)]
@@ -28,13 +28,12 @@ struct WgConfCache {
     peer_start_pos: Option<u64>,
 }
 
-// TODO: Create WgConf
 impl WgConf {
     /// Initializes [`WgConf``] from existing file
     ///
     /// Returns [`WgConfError::ValidationFailed`] if file validation is failed or [`WgConfError::Unexpected`] with details if other (fs) error occurred
     ///
-    /// Note, that [`WgConf`] always keeps the underlying config file open till the end of ownership
+    /// **Note**, that [`WgConf`] always keeps the underlying config file open till the end of ownership
     /// or untill drop() or WgConf.close() invoked
     pub fn open(file_name: &str) -> Result<WgConf, WgConfError> {
         let mut file = fileworks::open_file_w_all_permissions(file_name)?;
@@ -107,6 +106,17 @@ impl WgConf {
         self.conf_file.seek(SeekFrom::End(0)).map_err(|err| {
             WgConfError::Unexpected(format!("Couldn't set cursor to the end of the file: {err}"))
         })?;
+
+        // Check peer with provided peer is not exist
+        let mut peers = self.peers()?;
+        let existing_peer = peers.find(|p| p.public_key() == peer.public_key());
+        peers.check_err()?;
+        if let Some(_) = existing_peer {
+            return Err(WgConfError::AlreadyExists(format!(
+                "Peer with public key '{}'",
+                &peer.public_key.to_string()
+            )));
+        }
 
         let content = peer.to_string() + "\n";
         self.conf_file
@@ -862,6 +872,9 @@ DNS = 8.8.8.8
     #[test]
     fn add_peer_0_common_scenario() {
         // Arrange
+        const TEST_CONF_FILE: &str = "wg11.conf";
+        let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
+
         let peer = WgPeer::new(
             "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
                 .parse()
@@ -875,9 +888,6 @@ DNS = 8.8.8.8
             Some(25),
             Some("8.8.8.8".parse().unwrap()),
         );
-
-        const TEST_CONF_FILE: &str = "wg11.conf";
-        let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
 
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
         let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
@@ -897,9 +907,38 @@ DNS = 8.8.8.8
     }
 
     #[test]
-    fn remove_peer_by_pub_key_0_first_peer() {
+    fn add_peer_0_already_exists() {
         // Arrange
         const TEST_CONF_FILE: &str = "wg12.conf";
+        let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
+        let peer = WgPeer::new(
+            "Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4="
+                .parse()
+                .unwrap(),
+            vec!["10.0.0.1/32".parse().unwrap()],
+            Some(
+                "6FyM4Sq5zanp+9UOXIygLJQBYvlLsfF5lYcrSoa3CX8="
+                    .parse()
+                    .unwrap(),
+            ),
+            Some(25),
+            Some("8.8.8.8".parse().unwrap()),
+        );
+
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
+        let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+
+        // Act
+        let res = wg_conf.add_peer(peer);
+
+        // Assert
+        assert_eq!(WgConfErrKind::AlreadyExists, res.err().unwrap().kind());
+    }
+
+    #[test]
+    fn remove_peer_by_pub_key_0_first_peer() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg13.conf";
         let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
 
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
@@ -946,7 +985,7 @@ DNS = 8.8.8.8
     #[test]
     fn remove_peer_by_pub_key_0_last_peer() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg13.conf";
+        const TEST_CONF_FILE: &str = "wg14.conf";
         let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
 
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
@@ -986,7 +1025,7 @@ DNS = 8.8.8.8
     #[test]
     fn remove_peer_by_pub_key_0_middle_peer() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg14.conf";
+        const TEST_CONF_FILE: &str = "wg15.conf";
 
         const ADDITIONAL_PEER: &str = "[Peer]
 PublicKey = 4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=
@@ -1057,6 +1096,25 @@ DNS = 0.0.0.0
         let peer3 = peers_iter.next();
         assert_eq!(WgConfErrKind::EOF, peers_iter.err().unwrap().kind());
         assert!(peer3.is_none());
+    }
+
+    #[test]
+    fn remove_peer_by_pub_key_0_unexistent() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg16.conf";
+        let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
+
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
+        let wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+        let target_key: WgKey = "Rrr2pT8pOvcEKdp1KptvUi8OO/fYIWnkVcnXJ3dtUE4="
+            .parse()
+            .unwrap();
+
+        // Act
+        let res = wg_conf.remove_peer_by_pub_key(&target_key);
+
+        // Assert
+        assert_eq!(WgConfErrKind::NotFound, res.unwrap_err().kind());
     }
 
     fn prepare_test_conf(conf_name: &'static str, content: &str) -> Deferred {
