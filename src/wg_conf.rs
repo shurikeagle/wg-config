@@ -91,7 +91,7 @@ impl WgConf {
             })?;
 
         Ok(WgConfPeers {
-            last_err: None,
+            err: None,
             lines: BufReader::new(&mut self.conf_file).lines(),
             next_peer_exist: false,
             first_iteration: true,
@@ -119,16 +119,17 @@ impl WgConf {
     }
 
     pub fn remove_peer_by_pub_key(mut self, public_key: &WgKey) -> Result<WgConf, WgConfError> {
-        // TODO: This func breakes file while deleting tha last peer, one need to fix
         let mut peers = self.peers()?;
 
         // find target peer
-        let _ = peers
-            .find(|p| !p.is_err() && p.as_ref().unwrap().public_key() == public_key)
-            .ok_or(WgConfError::NotFound(format!(
+        let target_peer = peers.find(|p| p.public_key() == public_key);
+        peers.check_err()?;
+        if let None = target_peer {
+            return Err(WgConfError::NotFound(format!(
                 "Peer with public key '{}'",
                 public_key.to_string()
-            )))?;
+            )));
+        }
 
         // as target peer found, iterator sets current peer's start & end positions
         let start_peer_pos = peers
@@ -342,9 +343,12 @@ impl WgConf {
     }
 }
 
-/// Iterator over WgConf \[Peer\]s
+/// Iterator over WgConf \[Peer\]s.
+///
+/// **Note** that iterator returns `None` if any error occurred, so,
+/// one should to invoke `self.check_err()` to ensure that iterations were successfull while using the iterator
 pub struct WgConfPeers<'a> {
-    last_err: Option<WgConfError>,
+    err: Option<WgConfError>,
     lines: Lines<BufReader<&'a mut File>>,
     next_peer_exist: bool,
     first_iteration: bool,
@@ -355,14 +359,12 @@ pub struct WgConfPeers<'a> {
 }
 
 impl Iterator for WgConfPeers<'_> {
-    // TODO: Return WgPeer instead. If there is some err, return None. For client to understand if it's err or EOF, add last_err getter.
-    type Item = Result<WgPeer, WgConfError>;
+    type Item = WgPeer;
 
     /// Note all the not related to \[Peer\] key-values and duplications will be ignored (the last duplication value will be got) without errors
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(err) = &self.last_err {
-            // TODO: This may occure infinity loop if use iterator funcs (e.g. count())
-            return Some(Err(err.to_owned()));
+        if let Some(_) = &self.err {
+            return None;
         }
 
         // If we realized, that the next peer is not exist during the previous
@@ -378,24 +380,42 @@ impl Iterator for WgConfPeers<'_> {
                 }
 
                 match WgPeer::from_raw_key_values(raw_key_values) {
-                    Ok(peer) => Some(Ok(peer)),
+                    Ok(peer) => Some(peer),
                     Err(err) => {
-                        self.last_err = Some(err.clone());
+                        self.err = Some(err);
 
-                        return Some(Err(err));
+                        return None;
                     }
                 }
             }
             Err(err) => {
-                self.last_err = Some(err.clone());
+                self.err = Some(err);
 
-                Some(Err(err))
+                None
             }
         }
     }
 }
 
 impl WgConfPeers<'_> {
+    /// Returns iterator's error
+    ///
+    /// May be EOF which is successfull case
+    pub fn err(&mut self) -> Option<WgConfError> {
+        self.err.clone()
+    }
+
+    /// Ensures that iterator hasn't got any error except [WgConfError::EOF]
+    pub fn check_err(&mut self) -> Result<(), WgConfError> {
+        if let Some(err) = &self.err {
+            if err.kind() != WgConfErrKind::EOF {
+                return Err(err.clone());
+            }
+        }
+
+        Ok(())
+    }
+
     fn next_peer_key_values(&mut self) -> Result<HashMap<String, String>, WgConfError> {
         let mut raw_key_values: HashMap<String, String> = HashMap::with_capacity(10);
 
@@ -406,7 +426,6 @@ impl WgConfPeers<'_> {
                 Some(self.cur_position - wg_peer::PEER_TAG.len() as u64 - 1);
         }
 
-        // TODO: This code freezes infinitly if file contains invalid Peer tag (like 'Peer]'), one should to fix - return Err instead
         while let Some(line) = self.lines.next() {
             match line {
                 Ok(line) => {
@@ -440,7 +459,7 @@ impl WgConfPeers<'_> {
                             let _ = raw_key_values.insert(k, v);
                         }
                         Err(err) => {
-                            self.last_err = Some(err.clone());
+                            self.err = Some(err.clone());
 
                             return Err(err);
                         }
@@ -448,7 +467,7 @@ impl WgConfPeers<'_> {
                 }
                 Err(err) => {
                     let err = WgConfError::Unexpected(format!("Couldn't read next peer: {err}"));
-                    self.last_err = Some(err.clone());
+                    self.err = Some(err.clone());
 
                     return Err(err);
                 }
@@ -457,6 +476,7 @@ impl WgConfPeers<'_> {
 
         if !self.next_peer_exist {
             self.cur_peer_end_position = Some(self.cur_position);
+            self.err = Some(WgConfError::EOF);
         }
 
         Ok(raw_key_values)
@@ -742,8 +762,7 @@ PrivateKey
         // Assert
         match peer1 {
             Some(peer) => {
-                assert!(peer.is_ok());
-                let peer = peer.unwrap();
+                assert!(peers_iter.check_err().is_ok());
 
                 assert_eq!(
                     "LyXP6s7mzMlrlcZ5STONcPwTQFOUJuD8yQg6FYDeTzE=",
@@ -760,8 +779,7 @@ PrivateKey
 
         match peer2 {
             Some(peer) => {
-                assert!(peer.is_ok());
-                let peer = peer.unwrap();
+                assert!(peers_iter.check_err().is_ok());
 
                 assert_eq!(
                     "Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=",
@@ -783,6 +801,7 @@ PrivateKey
             None => panic!("Couldn't get the second peer"),
         }
 
+        assert_eq!(WgConfErrKind::EOF, peers_iter.err().unwrap().kind());
         assert!(peer3.is_none());
     }
 
@@ -824,20 +843,20 @@ DNS = 8.8.8.8
         let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
         let mut peers_iter = wg_conf.peers().unwrap();
 
-        // Act
-        let peer = peers_iter.next();
+        // Act & Assert
+        let peer1 = peers_iter.next();
+        assert!(peer1.is_none());
+        assert_eq!(
+            WgConfErrKind::ValidationFailed,
+            peers_iter.check_err().unwrap_err().kind()
+        );
+
         let peer2 = peers_iter.next();
-
-        // Assert
-        assert!(peer.is_some());
-        let peer = peer.unwrap();
-        assert!(peer.is_err());
-        assert_eq!(WgConfErrKind::ValidationFailed, peer.unwrap_err().kind());
-
-        assert!(peer2.is_some());
-        let peer2 = peer2.unwrap();
-        assert!(peer2.is_err());
-        assert_eq!(WgConfErrKind::ValidationFailed, peer2.unwrap_err().kind());
+        assert!(peer2.is_none());
+        assert_eq!(
+            WgConfErrKind::ValidationFailed,
+            peers_iter.check_err().unwrap_err().kind()
+        );
     }
 
     #[test]
@@ -866,15 +885,15 @@ DNS = 8.8.8.8
         // Act
         let res = wg_conf.add_peer(peer.clone());
         let count = wg_conf.peers().unwrap().count();
-        let last_peer = wg_conf.peers().unwrap().last();
+        let peers_iter = wg_conf.peers().unwrap();
+        let last_peer = peers_iter.last();
 
         // Assert
         assert!(res.is_ok());
         assert_eq!(3, count);
         assert!(last_peer.is_some());
         let last_peer = last_peer.unwrap();
-        assert!(last_peer.is_ok());
-        assert_eq!(peer, last_peer.unwrap());
+        assert_eq!(peer, last_peer);
     }
 
     #[test]
@@ -899,8 +918,7 @@ DNS = 8.8.8.8
         let existing_peer = peers_iter.next();
         match existing_peer {
             Some(peer) => {
-                assert!(peer.is_ok());
-                let peer = peer.unwrap();
+                assert!(peers_iter.check_err().is_ok());
 
                 assert_eq!(
                     "Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=",
@@ -947,8 +965,7 @@ DNS = 8.8.8.8
         let existing_peer = peers_iter.next();
         match existing_peer {
             Some(peer) => {
-                assert!(peer.is_ok());
-                let peer = peer.unwrap();
+                assert!(peers_iter.check_err().is_ok());
 
                 assert_eq!(
                     "LyXP6s7mzMlrlcZ5STONcPwTQFOUJuD8yQg6FYDeTzE=",
@@ -993,14 +1010,11 @@ DNS = 0.0.0.0
         let mut wg_conf = res.unwrap();
 
         let mut peers_iter = wg_conf.peers().unwrap();
-        let peer1 = peers_iter.next();
-        let peer2 = peers_iter.next();
-        let peer3 = peers_iter.next();
 
+        let peer1 = peers_iter.next();
         match peer1 {
             Some(peer) => {
-                assert!(peer.is_ok());
-                let peer = peer.unwrap();
+                assert!(peers_iter.check_err().is_ok());
 
                 assert_eq!(
                     "LyXP6s7mzMlrlcZ5STONcPwTQFOUJuD8yQg6FYDeTzE=",
@@ -1015,10 +1029,10 @@ DNS = 0.0.0.0
             None => panic!("Couldn't get peer after removing the previous one"),
         }
 
+        let peer2 = peers_iter.next();
         match peer2 {
             Some(peer) => {
-                assert!(peer.is_ok());
-                let peer = peer.unwrap();
+                assert!(peers_iter.check_err().is_ok());
 
                 assert_eq!(
                     "Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=",
@@ -1040,6 +1054,8 @@ DNS = 0.0.0.0
             None => panic!("Couldn't get peer after removing the previous one"),
         }
 
+        let peer3 = peers_iter.next();
+        assert_eq!(WgConfErrKind::EOF, peers_iter.err().unwrap().kind());
         assert!(peer3.is_none());
     }
 

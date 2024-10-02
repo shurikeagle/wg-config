@@ -9,6 +9,7 @@ pub enum WgConfErrKind {
     ValidationFailed,
     CouldntUpdateInterface,
     CriticalKeepTmp,
+    EOF,
 }
 
 #[derive(Debug)]
@@ -25,6 +26,8 @@ pub enum WgConfError {
     CouldntUpdateInterface(String),
     /// Some critical error occurred, config file was lost, actual config data is kept in .tmp file
     CriticalKeepTmp(String),
+    // End of file reached
+    EOF,
 }
 
 impl Clone for WgConfError {
@@ -36,6 +39,7 @@ impl Clone for WgConfError {
             Self::ValidationFailed(arg0) => Self::ValidationFailed(arg0.clone()),
             Self::CouldntUpdateInterface(arg0) => Self::CouldntUpdateInterface(arg0.clone()),
             Self::CriticalKeepTmp(arg0) => Self::CriticalKeepTmp(arg0.clone()),
+            Self::EOF => Self::EOF,
         }
     }
 }
@@ -49,6 +53,7 @@ impl WgConfError {
             WgConfError::ValidationFailed(_) => WgConfErrKind::ValidationFailed,
             WgConfError::CouldntUpdateInterface(_) => WgConfErrKind::CouldntUpdateInterface,
             WgConfError::CriticalKeepTmp(_) => WgConfErrKind::CriticalKeepTmp,
+            WgConfError::EOF => WgConfErrKind::EOF,
         }
     }
 }
@@ -69,6 +74,7 @@ impl Display for WgConfError {
                 f,
                 "Critical error occurred, the correct WG config is kept as .tmp: {err}"
             ),
+            WgConfError::EOF => write!(f, "End of file reached"),
         }
     }
 }
