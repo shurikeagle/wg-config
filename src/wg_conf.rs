@@ -247,7 +247,7 @@ impl WgConf {
             })?;
 
         // define new Peer position to set it into the cache if update will be successfull
-        let updated_peer_start_pos = interface_to_write.len() as u64 + 1;
+        let updated_peer_start_pos = interface_to_write.len() as u64;
 
         // copy peers from current conf file to dst
         self.copy_peers(&mut tmp_file).map_err(|err| {
@@ -361,6 +361,7 @@ impl Iterator for WgConfPeers<'_> {
     /// Note all the not related to \[Peer\] key-values and duplications will be ignored (the last duplication value will be got) without errors
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(err) = &self.last_err {
+            // TODO: This may occure infinity loop if use iterator funcs (e.g. count())
             return Some(Err(err.to_owned()));
         }
 
@@ -720,8 +721,7 @@ PrivateKey
         assert!(interface_by_method.is_ok());
         let interface_by_method = interface_by_method.unwrap();
         assert_eq!(new_interface, interface_by_method);
-
-        // TODO: Add peer asserts
+        assert_eq!(2, updated_conf.peers().unwrap().count());
     }
 
     #[test]
