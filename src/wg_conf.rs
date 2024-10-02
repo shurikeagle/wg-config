@@ -7,7 +7,9 @@ use std::{
 };
 
 use crate::{
-    error::WgConfError, fileworks, wg_interface, wg_peer, WgConfErrKind, WgInterface, WgKey, WgPeer,
+    error::WgConfError,
+    fileworks::{self, open_file_w_all_permissions},
+    wg_interface, wg_peer, WgConfErrKind, WgInterface, WgKey, WgPeer,
 };
 
 const CONF_EXTENSION: &'static str = "conf";
@@ -46,6 +48,57 @@ impl WgConf {
             cache: WgConfCache {
                 interface: None,
                 peer_start_pos: None,
+            },
+        })
+    }
+
+    /// Creates new [`WgConf``] with underlying file
+    ///
+    /// **Note**, that [`WgConf`] always keeps the underlying config file open till the end of ownership
+    /// or untill drop() or WgConf.close() invoked
+    pub fn create(
+        file_name: &str,
+        interface: WgInterface,
+        peers: Option<Vec<WgPeer>>,
+    ) -> Result<WgConf, WgConfError> {
+        {
+            let _ = File::create_new(file_name).map_err(|err| match err.kind() {
+                io::ErrorKind::AlreadyExists => {
+                    WgConfError::AlreadyExists(format!("WG config file '{}'", file_name))
+                }
+                _ => WgConfError::Unexpected(format!("Couldn't create WG config file: {}", err)),
+            })?;
+        }
+
+        let mut conf_file = open_file_w_all_permissions(file_name).map_err(|err| {
+            let _ = fs::remove_file(file_name);
+
+            err
+        })?;
+
+        let peer_start_pos = write_interface_to_file(&mut conf_file, file_name, &interface)
+            .map_err(|err| {
+                let _ = fs::remove_file(file_name);
+
+                err
+            })?;
+
+        if let Some(peers) = peers {
+            write_peers_to_file(&mut conf_file, file_name, peers).map_err(|err| {
+                let _ = fs::remove_file(file_name);
+
+                err
+            })?;
+        }
+
+        let _ = fileworks::seek_to_start(&mut conf_file, "");
+
+        Ok(WgConf {
+            conf_file,
+            conf_file_name: file_name.to_owned(),
+            cache: WgConfCache {
+                interface: Some(interface),
+                peer_start_pos: Some(peer_start_pos),
             },
         })
     }
@@ -244,21 +297,8 @@ impl WgConf {
         let (tmp_file_name, mut tmp_file) = fileworks::create_tmp_file(&self.conf_file_name)?;
 
         // write new interface section into tmp
-        let interface_to_write = interface.to_string() + "\n";
-        tmp_file
-            .write_all(interface_to_write.as_bytes())
-            .map_err(|err| {
-                let _ = fs::remove_file(&tmp_file_name);
-
-                WgConfError::Unexpected(format!(
-                    "Couldn't write interface into {}: {}",
-                    &tmp_file_name,
-                    err.to_string()
-                ))
-            })?;
-
-        // define new Peer position to set it into the cache if update will be successfull
-        let updated_peer_start_pos = interface_to_write.len() as u64;
+        let updated_peer_start_pos =
+            write_interface_to_file(&mut tmp_file, &tmp_file_name, &interface)?;
 
         // copy peers from current conf file to dst
         self.copy_peers(&mut tmp_file).map_err(|err| {
@@ -542,6 +582,60 @@ fn key_value_from_raw_string(raw_string: &str) -> Result<(String, String), WgCon
     }
 
     return Ok((key.to_owned(), value.to_owned()));
+}
+
+/// Returns peer start position
+fn write_interface_to_file(
+    file: &mut File,
+    file_name: &str,
+    interface: &WgInterface,
+) -> Result<u64, WgConfError> {
+    let interface_to_write = interface.to_string() + "\n";
+    file.write_all(interface_to_write.as_bytes())
+        .map_err(|err| {
+            let _ = fs::remove_file(file_name);
+
+            WgConfError::Unexpected(format!(
+                "Couldn't write interface into {}: {}",
+                file_name,
+                err.to_string()
+            ))
+        })?;
+
+    // define new Peer position to set it into the cache if update will be successfull
+    Ok(interface_to_write.len() as u64)
+}
+
+fn write_peers_to_file(
+    file: &mut File,
+    file_name: &str,
+    peers: Vec<WgPeer>,
+) -> Result<(), WgConfError> {
+    let peer_len = peers.len();
+    if peer_len == 0 {
+        return Ok(());
+    }
+
+    // TODO: May be dangerous for big files, it's better to implement batch logic
+    let approximate_cap = peer_len * 200;
+    let mut peers_str = String::with_capacity(approximate_cap);
+
+    for peer in peers.iter() {
+        let peer_str = peer.to_string() + "\n";
+        peers_str.push_str(&peer_str);
+    }
+
+    file.write_all(peers_str.as_bytes()).map_err(|err| {
+        let _ = fs::remove_file(file_name);
+
+        WgConfError::Unexpected(format!(
+            "Couldn't write peers into {}: {}",
+            file_name,
+            err.to_string()
+        ))
+    })?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1115,6 +1209,109 @@ DNS = 0.0.0.0
 
         // Assert
         assert_eq!(WgConfErrKind::NotFound, res.unwrap_err().kind());
+    }
+
+    #[test]
+    fn create_0_common_scenario() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg17.conf";
+        let interface = WgInterface::new(
+            "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
+                .to_string()
+                .parse()
+                .unwrap(),
+            "192.168.130.131/25".parse().unwrap(),
+            8082,
+            Some("some-script".to_string()),
+            Some("some-other-script".to_string()),
+        )
+        .unwrap();
+
+        let peers = vec![
+            WgPeer::new(
+                "Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4="
+                    .parse()
+                    .unwrap(),
+                vec!["10.0.0.1/32".parse().unwrap()],
+                Some(
+                    "LyXP6s7mzMlrlcZ5STONcPwTQFOUJuD8yQg6FYDeTzE="
+                        .parse()
+                        .unwrap(),
+                ),
+                Some(25),
+                Some("8.8.8.8".parse().unwrap()),
+            ),
+            WgPeer::new(
+                "4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c="
+                    .parse()
+                    .unwrap(),
+                vec!["10.0.0.1/32".parse().unwrap()],
+                None,
+                None,
+                None,
+            ),
+        ];
+
+        let cleanup_fn = || {
+            let _ = fs::remove_file(TEST_CONF_FILE.to_owned());
+        };
+
+        let _cleanup = Deferred(Box::new(cleanup_fn));
+
+        // Act
+        let wg_conf = WgConf::create(TEST_CONF_FILE, interface, Some(peers));
+
+        // Assert
+        assert!(wg_conf.is_ok());
+        let wg_conf = wg_conf.unwrap();
+        assert!(wg_conf.cache.interface.is_some());
+        assert!(wg_conf.cache.peer_start_pos.is_some());
+        assert!(fs::exists(TEST_CONF_FILE).unwrap());
+        let mut lines =
+            BufReader::new(open_file_w_all_permissions(TEST_CONF_FILE).unwrap()).lines();
+        assert!(lines.any(|l| l.is_ok()
+            && l.unwrap()
+                .contains("6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8=")));
+        assert!(lines.any(|l| l.is_ok()
+            && l.unwrap()
+                .contains("Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=")));
+        assert!(lines.any(|l| l.is_ok()
+            && l.unwrap()
+                .contains("4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=")));
+    }
+
+    #[test]
+    fn create_0_doesnt_overwrite() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg18.conf";
+        let content = INTERFACE_CONTENT.to_string();
+        let interface = WgInterface::new(
+            "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
+                .to_string()
+                .parse()
+                .unwrap(),
+            "192.168.130.131/25".parse().unwrap(),
+            8082,
+            Some("some-script".to_string()),
+            Some("some-other-script".to_string()),
+        )
+        .unwrap();
+
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
+
+        // Act
+        let wg_conf = WgConf::create(TEST_CONF_FILE, interface, None);
+
+        // Assert
+        assert!(wg_conf.unwrap_err().kind() == WgConfErrKind::AlreadyExists);
+        let mut lines =
+            BufReader::new(open_file_w_all_permissions(TEST_CONF_FILE).unwrap()).lines();
+        assert!(lines.any(|l| l.is_ok()
+            && l.unwrap()
+                .contains("4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=")));
+        assert!(!lines.any(|l| l.is_ok()
+            && l.unwrap()
+                .contains("6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8=")));
     }
 
     fn prepare_test_conf(conf_name: &'static str, content: &str) -> Deferred {
