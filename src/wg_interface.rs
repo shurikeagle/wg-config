@@ -116,8 +116,9 @@ impl WgInterface {
 
         let dns = dns
             .map(|dns| {
-                IpAddr::from_str(&dns)
-                    .map_err(|_| WgConfError::ValidationFailed("invalid dns raw value".to_string()))
+                IpAddr::from_str(&dns).map_err(|_| {
+                    WgConfError::ValidationFailed("dns must be an ip address".to_string())
+                })
             })
             .transpose()?;
 
