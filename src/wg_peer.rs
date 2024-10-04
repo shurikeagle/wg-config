@@ -126,7 +126,7 @@ impl WgPeer {
         let dns: Option<IpAddr> = dns
             .map(|dns| {
                 dns.parse().map_err(|_| {
-                    WgConfError::ValidationFailed("dns must have ip address format".to_string())
+                    WgConfError::ValidationFailed("dns must be an ip address".to_string())
                 })
             })
             .transpose()?;
