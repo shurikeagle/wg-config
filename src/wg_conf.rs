@@ -643,7 +643,7 @@ mod tests {
     use crate::error::WgConfErrKind;
 
     use super::*;
-    use std::{fs, io::Write};
+    use std::{fs, io::Write, net::IpAddr, str::FromStr};
 
     const INTERFACE_CONTENT: &'static str = "[Interface]
 PrivateKey = 4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=
@@ -828,6 +828,7 @@ PrivateKey
                 .unwrap(),
             "192.168.130.131/25".parse().unwrap(),
             8082,
+            Some(IpAddr::from_str("8.8.8.8").unwrap()),
             Some("some-script".to_string()),
             Some("some-other-script".to_string()),
         )
@@ -1222,6 +1223,7 @@ DNS = 0.0.0.0
                 .unwrap(),
             "192.168.130.131/25".parse().unwrap(),
             8082,
+            None,
             Some("some-script".to_string()),
             Some("some-other-script".to_string()),
         )
@@ -1292,6 +1294,7 @@ DNS = 0.0.0.0
                 .unwrap(),
             "192.168.130.131/25".parse().unwrap(),
             8082,
+            None,
             Some("some-script".to_string()),
             Some("some-other-script".to_string()),
         )
