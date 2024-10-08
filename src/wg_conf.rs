@@ -31,27 +31,6 @@ struct WgConfCache {
 }
 
 impl WgConf {
-    /// Initializes [`WgConf``] from existing file
-    ///
-    /// Returns [`WgConfError::ValidationFailed`] if file validation is failed or [`WgConfError::Unexpected`] with details if other (fs) error occurred
-    ///
-    /// **Note**, that [`WgConf`] always keeps the underlying config file open till the end of ownership
-    /// or untill drop() or WgConf.close() invoked
-    pub fn open(file_name: &str) -> Result<WgConf, WgConfError> {
-        let mut file = fileworks::open_file_w_all_permissions(file_name)?;
-
-        check_if_wg_conf(file_name, &mut file)?;
-
-        Ok(WgConf {
-            conf_file_name: file_name.to_owned(),
-            conf_file: file,
-            cache: WgConfCache {
-                interface: None,
-                peer_start_pos: None,
-            },
-        })
-    }
-
     /// Creates new [`WgConf``] with underlying file
     ///
     /// **Note**, that [`WgConf`] always keeps the underlying config file open till the end of ownership
@@ -99,6 +78,27 @@ impl WgConf {
             cache: WgConfCache {
                 interface: Some(interface),
                 peer_start_pos: Some(peer_start_pos),
+            },
+        })
+    }
+
+    /// Initializes [`WgConf``] from existing file
+    ///
+    /// Returns [`WgConfError::ValidationFailed`] if file validation is failed or [`WgConfError::Unexpected`] with details if other (fs) error occurred
+    ///
+    /// **Note**, that [`WgConf`] always keeps the underlying config file open till the end of ownership
+    /// or untill drop() or WgConf.close() invoked
+    pub fn open(file_name: &str) -> Result<WgConf, WgConfError> {
+        let mut file = fileworks::open_file_w_all_permissions(file_name)?;
+
+        check_if_wg_conf(file_name, &mut file)?;
+
+        Ok(WgConf {
+            conf_file_name: file_name.to_owned(),
+            conf_file: file,
+            cache: WgConfCache {
+                interface: None,
+                peer_start_pos: None,
             },
         })
     }
@@ -674,6 +674,120 @@ DNS = 8.8.8.8
     }
 
     #[test]
+    fn create_0_common_scenario() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg17.conf";
+
+        #[cfg(feature = "wg_engine")]
+        let (private_key, psk) = (
+            WgKey::generate_private_key().unwrap(),
+            WgKey::generate_preshared_key().unwrap(),
+        );
+        #[cfg(not(feature = "wg_engine"))]
+        let (private_key, psk): (WgKey, WgKey) = (
+            "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
+                .to_string()
+                .parse()
+                .unwrap(),
+            "LyXP6s7mzMlrlcZ5STONcPwTQFOUJuD8yQg6FYDeTzE="
+                .parse()
+                .unwrap(),
+        );
+
+        let interface = WgInterface::new(
+            private_key.clone(),
+            "192.168.130.131/25".parse().unwrap(),
+            8082,
+            None,
+            Some("some-script".to_string()),
+            Some("some-other-script".to_string()),
+        )
+        .unwrap();
+
+        let peers = vec![
+            WgPeer::new(
+                "Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=" // TODO: Generate with feature flag for the better example
+                    .parse()
+                    .unwrap(),
+                vec!["10.0.0.1/32".parse().unwrap()],
+                Some(psk.clone()),
+                Some(25),
+                Some("8.8.8.8".parse().unwrap()),
+            ),
+            WgPeer::new(
+                "4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c="
+                    .parse()
+                    .unwrap(),
+                vec!["10.0.0.1/32".parse().unwrap()],
+                None,
+                None,
+                None,
+            ),
+        ];
+
+        let cleanup_fn = || {
+            let _ = fs::remove_file(TEST_CONF_FILE.to_owned());
+        };
+
+        let _cleanup = Deferred(Box::new(cleanup_fn));
+
+        // Act
+        let wg_conf = WgConf::create(TEST_CONF_FILE, interface, Some(peers));
+
+        // Assert
+        assert!(wg_conf.is_ok());
+        let wg_conf = wg_conf.unwrap();
+        assert!(wg_conf.cache.interface.is_some());
+        assert!(wg_conf.cache.peer_start_pos.is_some());
+        assert!(fs::exists(TEST_CONF_FILE).unwrap());
+        let mut lines =
+            BufReader::new(open_file_w_all_permissions(TEST_CONF_FILE).unwrap()).lines();
+        assert!(lines.any(|l| l.is_ok() && l.unwrap().contains(&private_key.to_string())));
+        assert!(lines.any(|l| l.is_ok()
+            && l.unwrap()
+                .contains("Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=")));
+        assert!(lines.any(|l| l.is_ok() && l.unwrap().contains(&psk.to_string())));
+        assert!(lines.any(|l| l.is_ok()
+            && l.unwrap()
+                .contains("4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=")));
+    }
+
+    #[test]
+    fn create_0_doesnt_overwrite() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg18.conf";
+        let content = INTERFACE_CONTENT.to_string();
+        let interface = WgInterface::new(
+            "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
+                .to_string()
+                .parse()
+                .unwrap(),
+            "192.168.130.131/25".parse().unwrap(),
+            8082,
+            None,
+            Some("some-script".to_string()),
+            Some("some-other-script".to_string()),
+        )
+        .unwrap();
+
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
+
+        // Act
+        let wg_conf = WgConf::create(TEST_CONF_FILE, interface, None);
+
+        // Assert
+        assert!(wg_conf.unwrap_err().kind() == WgConfErrKind::AlreadyExists);
+        let mut lines =
+            BufReader::new(open_file_w_all_permissions(TEST_CONF_FILE).unwrap()).lines();
+        assert!(lines.any(|l| l.is_ok()
+            && l.unwrap()
+                .contains("4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=")));
+        assert!(!lines.any(|l| l.is_ok()
+            && l.unwrap()
+                .contains("6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8=")));
+    }
+
+    #[test]
     fn open_0_common_scenario() {
         // Arrange
         const TEST_CONF_FILE: &str = "wg1.conf";
@@ -1210,111 +1324,6 @@ DNS = 0.0.0.0
 
         // Assert
         assert_eq!(WgConfErrKind::NotFound, res.unwrap_err().kind());
-    }
-
-    #[test]
-    fn create_0_common_scenario() {
-        // Arrange
-        const TEST_CONF_FILE: &str = "wg17.conf";
-        let interface = WgInterface::new(
-            "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
-                .to_string()
-                .parse()
-                .unwrap(),
-            "192.168.130.131/25".parse().unwrap(),
-            8082,
-            None,
-            Some("some-script".to_string()),
-            Some("some-other-script".to_string()),
-        )
-        .unwrap();
-
-        let peers = vec![
-            WgPeer::new(
-                "Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4="
-                    .parse()
-                    .unwrap(),
-                vec!["10.0.0.1/32".parse().unwrap()],
-                Some(
-                    "LyXP6s7mzMlrlcZ5STONcPwTQFOUJuD8yQg6FYDeTzE="
-                        .parse()
-                        .unwrap(),
-                ),
-                Some(25),
-                Some("8.8.8.8".parse().unwrap()),
-            ),
-            WgPeer::new(
-                "4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c="
-                    .parse()
-                    .unwrap(),
-                vec!["10.0.0.1/32".parse().unwrap()],
-                None,
-                None,
-                None,
-            ),
-        ];
-
-        let cleanup_fn = || {
-            let _ = fs::remove_file(TEST_CONF_FILE.to_owned());
-        };
-
-        let _cleanup = Deferred(Box::new(cleanup_fn));
-
-        // Act
-        let wg_conf = WgConf::create(TEST_CONF_FILE, interface, Some(peers));
-
-        // Assert
-        assert!(wg_conf.is_ok());
-        let wg_conf = wg_conf.unwrap();
-        assert!(wg_conf.cache.interface.is_some());
-        assert!(wg_conf.cache.peer_start_pos.is_some());
-        assert!(fs::exists(TEST_CONF_FILE).unwrap());
-        let mut lines =
-            BufReader::new(open_file_w_all_permissions(TEST_CONF_FILE).unwrap()).lines();
-        assert!(lines.any(|l| l.is_ok()
-            && l.unwrap()
-                .contains("6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8=")));
-        assert!(lines.any(|l| l.is_ok()
-            && l.unwrap()
-                .contains("Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=")));
-        assert!(lines.any(|l| l.is_ok()
-            && l.unwrap()
-                .contains("4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=")));
-    }
-
-    #[test]
-    fn create_0_doesnt_overwrite() {
-        // Arrange
-        const TEST_CONF_FILE: &str = "wg18.conf";
-        let content = INTERFACE_CONTENT.to_string();
-        let interface = WgInterface::new(
-            "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
-                .to_string()
-                .parse()
-                .unwrap(),
-            "192.168.130.131/25".parse().unwrap(),
-            8082,
-            None,
-            Some("some-script".to_string()),
-            Some("some-other-script".to_string()),
-        )
-        .unwrap();
-
-        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
-
-        // Act
-        let wg_conf = WgConf::create(TEST_CONF_FILE, interface, None);
-
-        // Assert
-        assert!(wg_conf.unwrap_err().kind() == WgConfErrKind::AlreadyExists);
-        let mut lines =
-            BufReader::new(open_file_w_all_permissions(TEST_CONF_FILE).unwrap()).lines();
-        assert!(lines.any(|l| l.is_ok()
-            && l.unwrap()
-                .contains("4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=")));
-        assert!(!lines.any(|l| l.is_ok()
-            && l.unwrap()
-                .contains("6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8=")));
     }
 
     fn prepare_test_conf(conf_name: &'static str, content: &str) -> Deferred {

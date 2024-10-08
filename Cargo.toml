@@ -12,3 +12,7 @@ keywords = ["wireguard", "wg", "config", "vpn", "management"]
 [dependencies]
 base64 = "0.22.1"
 ipnetwork = "0.20.0"
+
+[features]
+default = ["wg_engine"]
+wg_engine = []
