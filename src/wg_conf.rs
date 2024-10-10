@@ -679,17 +679,25 @@ DNS = 8.8.8.8
         const TEST_CONF_FILE: &str = "wg17.conf";
 
         #[cfg(feature = "wg_engine")]
-        let (private_key, psk) = (
+        let (private_key, psk, peer1_pubkey, peer2_pubkey) = (
             WgKey::generate_private_key().unwrap(),
             WgKey::generate_preshared_key().unwrap(),
+            WgKey::generate_public_key(&WgKey::generate_private_key().unwrap()).unwrap(),
+            WgKey::generate_public_key(&WgKey::generate_private_key().unwrap()).unwrap(),
         );
         #[cfg(not(feature = "wg_engine"))]
-        let (private_key, psk): (WgKey, WgKey) = (
+        let (private_key, psk, peer1_pubkey, peer2_pubkey): (WgKey, WgKey, WgKey, WgKey) = (
             "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
                 .to_string()
                 .parse()
                 .unwrap(),
             "LyXP6s7mzMlrlcZ5STONcPwTQFOUJuD8yQg6FYDeTzE="
+                .parse()
+                .unwrap(),
+            "Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4="
+                .parse()
+                .unwrap(),
+            "4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c="
                 .parse()
                 .unwrap(),
         );
@@ -706,18 +714,14 @@ DNS = 8.8.8.8
 
         let peers = vec![
             WgPeer::new(
-                "Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=" // TODO: Generate with feature flag for the better example
-                    .parse()
-                    .unwrap(),
+                peer1_pubkey.clone(),
                 vec!["10.0.0.1/32".parse().unwrap()],
                 Some(psk.clone()),
                 Some(25),
                 Some("8.8.8.8".parse().unwrap()),
             ),
             WgPeer::new(
-                "4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c="
-                    .parse()
-                    .unwrap(),
+                peer2_pubkey.clone(),
                 vec!["10.0.0.1/32".parse().unwrap()],
                 None,
                 None,
@@ -743,13 +747,9 @@ DNS = 8.8.8.8
         let mut lines =
             BufReader::new(open_file_w_all_permissions(TEST_CONF_FILE).unwrap()).lines();
         assert!(lines.any(|l| l.is_ok() && l.unwrap().contains(&private_key.to_string())));
-        assert!(lines.any(|l| l.is_ok()
-            && l.unwrap()
-                .contains("Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=")));
+        assert!(lines.any(|l| l.is_ok() && l.unwrap().contains(&peer1_pubkey.to_string())));
         assert!(lines.any(|l| l.is_ok() && l.unwrap().contains(&psk.to_string())));
-        assert!(lines.any(|l| l.is_ok()
-            && l.unwrap()
-                .contains("4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=")));
+        assert!(lines.any(|l| l.is_ok() && l.unwrap().contains(&peer2_pubkey.to_string())));
     }
 
     #[test]

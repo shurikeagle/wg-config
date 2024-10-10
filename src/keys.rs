@@ -1,7 +1,8 @@
+use std::str::FromStr;
+#[cfg(feature = "wg_engine")]
 use std::{
     io::Write,
     process::{Command, Output, Stdio},
-    str::FromStr,
 };
 
 use base64::Engine;
@@ -108,6 +109,7 @@ impl WgKey {
     }
 }
 
+#[cfg(feature = "wg_engine")]
 fn check_stderr(output: &Output) -> Result<(), WgConfError> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -118,6 +120,7 @@ fn check_stderr(output: &Output) -> Result<(), WgConfError> {
     Ok(())
 }
 
+#[cfg(feature = "wg_engine")]
 fn parse_key(key_bytes: &Vec<u8>) -> Result<WgKey, WgConfError> {
     String::from_utf8_lossy(key_bytes)
         .trim()
@@ -125,10 +128,12 @@ fn parse_key(key_bytes: &Vec<u8>) -> Result<WgKey, WgConfError> {
         .parse()
 }
 
+#[cfg(feature = "wg_engine")]
 fn couldnt_generate_pub_key(details: String) -> WgConfError {
     WgConfError::WgEngineError(format!("Couldn't generate public key: {}", details))
 }
 
+#[cfg(feature = "wg_engine")]
 fn generate_key(genpsk: bool) -> Result<WgKey, WgConfError> {
     let (cmd, err_msg) = match genpsk {
         true => ("genpsk", "preshared"),
