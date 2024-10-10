@@ -15,6 +15,10 @@ pub struct WgKey {
     pub(crate) key: String,
 }
 
+pub type WgPrivateKey = WgKey;
+pub type WgPublicKey = WgKey;
+pub type WgPresharedKey = WgKey;
+
 impl ToString for WgKey {
     fn to_string(&self) -> String {
         self.key.clone()
@@ -67,7 +71,7 @@ impl WgKey {
     ///
     /// **Note**, this function requires WG installed
     #[cfg(feature = "wg_engine")]
-    pub fn generate_private_key() -> Result<WgKey, WgConfError> {
+    pub fn generate_private_key() -> Result<WgPrivateKey, WgConfError> {
         generate_key(false)
     }
 
@@ -75,7 +79,7 @@ impl WgKey {
     ///
     /// **Note**, this function requires WG installed
     #[cfg(feature = "wg_engine")]
-    pub fn generate_preshared_key() -> Result<WgKey, WgConfError> {
+    pub fn generate_preshared_key() -> Result<WgPresharedKey, WgConfError> {
         generate_key(true)
     }
 
@@ -83,7 +87,7 @@ impl WgKey {
     ///
     /// **Note**, this function requires WG installed
     #[cfg(feature = "wg_engine")]
-    pub fn generate_public_key(private_key: &WgKey) -> Result<WgKey, WgConfError> {
+    pub fn generate_public_key(private_key: &WgPrivateKey) -> Result<WgPublicKey, WgConfError> {
         let mut pubkey_proc = Command::new("wg")
             .arg("pubkey")
             .stdin(Stdio::piped())

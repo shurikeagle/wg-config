@@ -640,7 +640,7 @@ fn write_peers_to_file(
 
 #[cfg(test)]
 mod tests {
-    use crate::error::WgConfErrKind;
+    use crate::{error::WgConfErrKind, WgPresharedKey, WgPrivateKey, WgPublicKey};
 
     use super::*;
     use std::{fs, io::Write, net::IpAddr, str::FromStr};
@@ -679,14 +679,24 @@ DNS = 8.8.8.8
         const TEST_CONF_FILE: &str = "wg17.conf";
 
         #[cfg(feature = "wg_engine")]
-        let (private_key, psk, peer1_pubkey, peer2_pubkey) = (
+        let (private_key, psk, peer1_pubkey, peer2_pubkey): (
+            WgPrivateKey,
+            WgPresharedKey,
+            WgPublicKey,
+            WgPublicKey,
+        ) = (
             WgKey::generate_private_key().unwrap(),
             WgKey::generate_preshared_key().unwrap(),
             WgKey::generate_public_key(&WgKey::generate_private_key().unwrap()).unwrap(),
             WgKey::generate_public_key(&WgKey::generate_private_key().unwrap()).unwrap(),
         );
         #[cfg(not(feature = "wg_engine"))]
-        let (private_key, psk, peer1_pubkey, peer2_pubkey): (WgKey, WgKey, WgKey, WgKey) = (
+        let (private_key, psk, peer1_pubkey, peer2_pubkey): (
+            WgPrivateKey,
+            WgPresharedKey,
+            WgPublicKey,
+            WgPublicKey,
+        ) = (
             "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
                 .to_string()
                 .parse()
