@@ -279,6 +279,11 @@ impl WgConf {
     ///
     /// `server_endpoint` public endpoint which will be used by client to connect to server
     ///
+    /// `server_allowed_ips` depends on virtual network purposes.
+    /// If WG is used for proxying, `0.0.0.0/0` may be used to send the whole traffic through the VPN.
+    /// If WG is used for virtual network as is, and, e.g. network address is 10.*, `10.0.0.0/8` may be used to use VPN only
+    /// for this network and other traffic ('open' internet) will not bee sent through the server
+    ///
     /// `dns` may be None in this case default server's dns will be used by WG
     ///
     /// `use_preshared_key` indicates if preshared key between server and client will be generated
@@ -287,6 +292,7 @@ impl WgConf {
         &mut self,
         client_address: IpAddr,
         server_endpoint: SocketAddr,
+        server_allowed_ips: Vec<IpNetwork>,
         dns: Option<IpAddr>,
         use_preshared_key: bool,
         persistent_keepalive: Option<u16>,
@@ -319,7 +325,7 @@ impl WgConf {
             WgInterface::new(client_private_key, client_address, None, dns, None, None)?;
         let client_peer_w_server = WgPeer::new(
             server_pub_key,
-            vec!["0.0.0.0/0".parse().unwrap()],
+            server_allowed_ips,
             Some(server_endpoint),
             preshared_key,
             persistent_keepalive,
@@ -1430,6 +1436,7 @@ DNS = 0.0.0.0
         let res = wg_conf.generate_peer(
             "10.0.0.2".parse().unwrap(),
             "127.0.0.2:8080".parse().unwrap(),
+            vec!["0.0.0.0/0".parse().unwrap()],
             Some("8.8.8.8".parse().unwrap()),
             true,
             Some(10),
