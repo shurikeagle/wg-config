@@ -20,7 +20,7 @@ const POST_DOWN: &'static str = "PostDown";
 pub struct WgInterface {
     pub(crate) private_key: WgKey,
     pub(crate) address: IpNetwork,
-    pub(crate) listen_port: u16,
+    pub(crate) listen_port: Option<u16>,
     pub(crate) dns: Option<IpAddr>,
     pub(crate) post_up: Option<String>,
     pub(crate) post_down: Option<String>,
@@ -28,6 +28,11 @@ pub struct WgInterface {
 
 impl ToString for WgInterface {
     fn to_string(&self) -> String {
+        let listen_port = match &self.listen_port {
+            Some(val) => format!("\n{} = {}", LISTEN_PORT, val.to_string()),
+            None => "".to_string(),
+        };
+
         let dns = match &self.dns {
             Some(val) => format!("\n{} = {}", DNS, val.to_string()),
             None => "".to_string(),
@@ -46,16 +51,14 @@ impl ToString for WgInterface {
         format!(
             "{}
 {} = {}
-{} = {}
-{} = {}{}{}{}
+{} = {}{}{}{}{}
 ",
             INTERFACE_TAG,
             PRIVATE_KEY,
             self.private_key.to_string(),
             ADDRESS,
             self.address.to_string(),
-            LISTEN_PORT,
-            self.listen_port,
+            listen_port,
             dns,
             post_up,
             post_down
@@ -65,16 +68,21 @@ impl ToString for WgInterface {
 
 impl WgInterface {
     /// Creates new [`WgInterface`]
+    ///
+    /// `listen_port` is required only for Server configuration,
+    /// in case of Client, it may be None
     pub fn new(
         private_key: WgKey,
         address: IpNetwork,
-        listen_port: u16,
+        listen_port: Option<u16>,
         dns: Option<IpAddr>,
         post_up: Option<String>,
         post_down: Option<String>,
     ) -> Result<WgInterface, WgConfError> {
-        if listen_port == 0 {
-            return Err(WgConfError::ValidationFailed("port can't be 0".to_string()));
+        if let Some(listen_port) = listen_port {
+            if listen_port == 0 {
+                return Err(WgConfError::ValidationFailed("port can't be 0".to_string()));
+            }
         }
 
         Ok(WgInterface {
@@ -93,7 +101,7 @@ impl WgInterface {
     pub fn from_raw_values(
         private_key: String,
         address: String,
-        listen_port: String,
+        listen_port: Option<String>,
         dns: Option<String>,
         post_up: Option<String>,
         post_down: Option<String>,
@@ -106,12 +114,18 @@ impl WgInterface {
             )
         })?;
 
-        let listen_port: u16 = listen_port
-            .parse()
-            .map_err(|_| WgConfError::ValidationFailed("invalid port raw value".to_string()))?;
+        let listen_port: Option<u16> = listen_port
+            .map(|port| {
+                port.parse().map_err(|_| {
+                    WgConfError::ValidationFailed("invalid port raw value".to_string())
+                })
+            })
+            .transpose()?;
 
-        if listen_port == 0 {
-            return Err(WgConfError::ValidationFailed("port can't be 0".to_string()));
+        if let Some(listen_port) = listen_port {
+            if listen_port == 0 {
+                return Err(WgConfError::ValidationFailed("port can't be 0".to_string()));
+            }
         }
 
         let dns = dns
@@ -139,11 +153,11 @@ impl WgInterface {
     pub fn address(&self) -> &IpNetwork {
         &self.address
     }
-    pub fn listen_port(&self) -> u16 {
+    pub fn listen_port(&self) -> Option<u16> {
         self.listen_port
     }
-    pub fn dns(&self) -> Option<IpAddr> {
-        self.dns
+    pub fn dns(&self) -> Option<&IpAddr> {
+        self.dns.as_ref()
     }
     pub fn post_up(&self) -> Option<&str> {
         self.post_up.as_deref()
@@ -157,7 +171,7 @@ impl WgInterface {
     ) -> Result<WgInterface, WgConfError> {
         let mut private_key = String::new();
         let mut address = String::new();
-        let mut listen_port: String = String::new();
+        let mut listen_port: Option<String> = None;
         let mut dns: Option<String> = None;
         let mut post_up: Option<String> = None;
         let mut post_down: Option<String> = None;
@@ -166,7 +180,7 @@ impl WgInterface {
             match k {
                 _ if k == PRIVATE_KEY => private_key = v,
                 _ if k == ADDRESS => address = v,
-                _ if k == LISTEN_PORT => listen_port = v,
+                _ if k == LISTEN_PORT => listen_port = Some(v),
                 _ if k == DNS => dns = Some(v),
                 _ if k == POST_UP => post_up = Some(v),
                 _ if k == POST_DOWN => post_down = Some(v),
@@ -190,7 +204,7 @@ mod tests {
                 .parse()
                 .unwrap(),
             "192.168.130.131/25".parse().unwrap(),
-            8082,
+            Some(8082),
             Some(IpAddr::from_str("8.8.8.8").unwrap()),
             Some("some-script".to_string()),
             Some("some-other-script".to_string()),
@@ -222,7 +236,7 @@ PostDown = some-other-script
                 .parse()
                 .unwrap(),
             "192.168.130.131/25".parse().unwrap(),
-            8082,
+            None,
             None,
             None,
             None,
@@ -237,7 +251,6 @@ PostDown = some-other-script
             "[Interface]
 PrivateKey = 6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8=
 Address = 192.168.130.131/25
-ListenPort = 8082
 ",
             &interf_raw
         )

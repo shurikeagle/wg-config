@@ -9,8 +9,15 @@ use std::{
 use crate::{
     error::WgConfError,
     fileworks::{self, open_file_w_all_permissions},
-    wg_interface, wg_peer, WgConfErrKind, WgInterface, WgKey, WgPeer,
+    wg_interface, wg_peer, WgConfErrKind, WgInterface, WgKey, WgPeer, WgPublicKey,
 };
+
+#[cfg(feature = "wg_engine")]
+use crate::WgClientConf;
+#[cfg(feature = "wg_engine")]
+use ipnetwork::IpNetwork;
+#[cfg(feature = "wg_engine")]
+use std::net::{IpAddr, SocketAddr};
 
 const CONF_EXTENSION: &'static str = "conf";
 
@@ -26,12 +33,13 @@ pub struct WgConf {
 
 #[derive(Debug)]
 struct WgConfCache {
+    pub_key: Option<WgPublicKey>,
     interface: Option<WgInterface>,
     peer_start_pos: Option<u64>,
 }
 
 impl WgConf {
-    /// Creates new [`WgConf``] with underlying file
+    /// Creates new [`WgConf`] with underlying file
     ///
     /// **Note**, that [`WgConf`] always keeps the underlying config file open till the end of ownership
     /// or untill drop() or WgConf.close() invoked
@@ -40,6 +48,12 @@ impl WgConf {
         interface: WgInterface,
         peers: Option<Vec<WgPeer>>,
     ) -> Result<WgConf, WgConfError> {
+        if let None = interface.listen_port {
+            return Err(WgConfError::ValidationFailed(
+                "Listen port must be set for server config".to_string(),
+            ));
+        }
+
         {
             let _ = File::create_new(file_name).map_err(|err| match err.kind() {
                 io::ErrorKind::AlreadyExists => {
@@ -76,6 +90,7 @@ impl WgConf {
             conf_file,
             conf_file_name: file_name.to_owned(),
             cache: WgConfCache {
+                pub_key: None,
                 interface: Some(interface),
                 peer_start_pos: Some(peer_start_pos),
             },
@@ -97,10 +112,23 @@ impl WgConf {
             conf_file_name: file_name.to_owned(),
             conf_file: file,
             cache: WgConfCache {
+                pub_key: None,
                 interface: None,
                 peer_start_pos: None,
             },
         })
+    }
+
+    /// Returns public key according to \[Interface\] private key
+    #[cfg(feature = "wg_engine")]
+    pub fn pub_key(&mut self) -> Result<WgPublicKey, WgConfError> {
+        if let Some(pub_key) = &self.cache.pub_key {
+            return Ok(pub_key.clone());
+        }
+
+        let interface = self.interface()?;
+
+        WgKey::generate_public_key(&interface.private_key)
     }
 
     /// Gets Interface settings from [`WgConf``] file
@@ -127,7 +155,11 @@ impl WgConf {
             }
         }
 
-        self.update_interface_in_file(new_inteface)
+        let mut updated_conf = self.update_interface_in_file(new_inteface)?;
+
+        updated_conf.cache.pub_key = None;
+
+        Ok(updated_conf)
     }
 
     /// Returns iterator over WG config Peers
@@ -239,6 +271,64 @@ impl WgConf {
         self.conf_file = new_wg_conf_file;
 
         Ok(self)
+    }
+
+    /// Generates client configuration from own settings and adds it as own peer
+    ///
+    /// `aclient_ddress` client's virtual address
+    ///
+    /// `server_endpoint` public endpoint which will be used by client to connect to server
+    ///
+    /// `dns` may be None in this case default server's dns will be used by WG
+    ///
+    /// `use_preshared_key` indicates if preshared key between server and client will be generated
+    #[cfg(feature = "wg_engine")]
+    pub fn generate_peer(
+        &mut self,
+        client_address: IpAddr,
+        server_endpoint: SocketAddr,
+        dns: Option<IpAddr>,
+        use_preshared_key: bool,
+        persistent_keepalive: Option<u16>,
+    ) -> Result<WgClientConf, WgConfError> {
+        use crate::WgPresharedKey;
+
+        let client_private_key = WgKey::generate_private_key()?;
+        let client_pub_key = WgKey::generate_public_key(&client_private_key)?;
+        let server_pub_key = self.pub_key().to_owned()?;
+        let preshared_key: Option<WgPresharedKey> = match use_preshared_key {
+            true => Some(WgKey::generate_preshared_key()?),
+            false => None,
+        };
+        let client_address: IpNetwork =
+            (client_address.to_string() + "/32").parse().map_err(|_| {
+                WgConfError::Unexpected(
+                    "Couldn't create address with mask from provided value".to_string(),
+                )
+            })?;
+
+        let server_peer_w_client = WgPeer::new(
+            client_pub_key,
+            vec![client_address.clone()],
+            None,
+            preshared_key.clone(),
+            persistent_keepalive,
+        );
+
+        let client_interface =
+            WgInterface::new(client_private_key, client_address, None, dns, None, None)?;
+        let client_peer_w_server = WgPeer::new(
+            server_pub_key,
+            vec!["0.0.0.0/0".parse().unwrap()],
+            Some(server_endpoint),
+            preshared_key,
+            persistent_keepalive,
+        );
+        let client_conf = WgClientConf::new(client_interface, vec![client_peer_w_server]);
+
+        self.add_peer(server_peer_w_client)?;
+
+        Ok(client_conf)
     }
 
     /// Closes [`WgConf`] underlying file
@@ -662,7 +752,6 @@ PublicKey = Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4=
 AllowedIPs = 10.0.0.3/32, 10.0.0.4/32
 PresharedKey = 4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=
 PersistentKeepalive = 25
-DNS = 8.8.8.8
 ";
 
     struct Deferred(pub Box<dyn Fn() -> ()>);
@@ -676,7 +765,7 @@ DNS = 8.8.8.8
     #[test]
     fn create_0_common_scenario() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg17.conf";
+        const TEST_CONF_FILE: &str = "wg1.conf";
 
         #[cfg(feature = "wg_engine")]
         let (private_key, psk, peer1_pubkey, peer2_pubkey): (
@@ -715,7 +804,7 @@ DNS = 8.8.8.8
         let interface = WgInterface::new(
             private_key.clone(),
             "192.168.130.131/25".parse().unwrap(),
-            8082,
+            Some(8082),
             None,
             Some("some-script".to_string()),
             Some("some-other-script".to_string()),
@@ -726,9 +815,9 @@ DNS = 8.8.8.8
             WgPeer::new(
                 peer1_pubkey.clone(),
                 vec!["10.0.0.1/32".parse().unwrap()],
+                None,
                 Some(psk.clone()),
                 Some(25),
-                Some("8.8.8.8".parse().unwrap()),
             ),
             WgPeer::new(
                 peer2_pubkey.clone(),
@@ -765,7 +854,7 @@ DNS = 8.8.8.8
     #[test]
     fn create_0_doesnt_overwrite() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg18.conf";
+        const TEST_CONF_FILE: &str = "wg2.conf";
         let content = INTERFACE_CONTENT.to_string();
         let interface = WgInterface::new(
             "6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8="
@@ -773,7 +862,7 @@ DNS = 8.8.8.8
                 .parse()
                 .unwrap(),
             "192.168.130.131/25".parse().unwrap(),
-            8082,
+            Some(8082),
             None,
             Some("some-script".to_string()),
             Some("some-other-script".to_string()),
@@ -800,7 +889,7 @@ DNS = 8.8.8.8
     #[test]
     fn open_0_common_scenario() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg1.conf";
+        const TEST_CONF_FILE: &str = "wg3.conf";
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, INTERFACE_CONTENT);
 
         // Act
@@ -826,7 +915,7 @@ DNS = 8.8.8.8
     #[test]
     fn open_0_invalid_extension_0_returns_not_wg_conf() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg2.cong";
+        const TEST_CONF_FILE: &str = "wg4.cong";
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, INTERFACE_CONTENT);
 
         // Act
@@ -840,7 +929,7 @@ DNS = 8.8.8.8
     #[test]
     fn open_0_bad_interface_tag_0_returns_not_wg_conf() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg3.conf";
+        const TEST_CONF_FILE: &str = "wg5.conf";
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, "[Interfacece]");
 
         // Act
@@ -854,7 +943,7 @@ DNS = 8.8.8.8
     #[test]
     fn interface_0_common_scenario() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg4.conf";
+        const TEST_CONF_FILE: &str = "wg6.conf";
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, INTERFACE_CONTENT);
         let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
 
@@ -869,7 +958,7 @@ DNS = 8.8.8.8
             interface.private_key.to_string()
         );
         assert_eq!("10.0.0.1/24", interface.address.to_string());
-        assert_eq!(8080, interface.listen_port);
+        assert_eq!(8080, interface.listen_port.unwrap());
         assert_eq!(Some("ufw allow 8080/udp"), interface.post_up());
         assert_eq!(Some("ufw delete allow 8080/udp"), interface.post_down());
         assert!(wg_conf.cache.interface.is_some());
@@ -879,7 +968,7 @@ DNS = 8.8.8.8
     #[test]
     fn interface_0_empty_double_not_interface_kv_0_returns_ok() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg5.conf";
+        const TEST_CONF_FILE: &str = "wg7.conf";
         const CONTENT: &str = "[Interface]
     ttt = eee
 PrivateKey = 4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=
@@ -906,7 +995,7 @@ PostUp = ufw allow 8080/udp";
             interface.private_key.to_string()
         );
         assert_eq!("10.0.0.1/24", interface.address.to_string());
-        assert_eq!(8080, interface.listen_port);
+        assert_eq!(8080, interface.listen_port.unwrap());
         assert_eq!(Some("ufw allow 8080/udp"), interface.post_up());
         assert_eq!(None, interface.post_down());
     }
@@ -914,7 +1003,7 @@ PostUp = ufw allow 8080/udp";
     #[test]
     fn interface_0_not_key_value_lines_0_returns_unexpected_err() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg6.conf";
+        const TEST_CONF_FILE: &str = "wg8.conf";
         const CONTENT: &str = "[Interface]
     ttt = eee
 PrivateKey
@@ -935,7 +1024,7 @@ PrivateKey
     #[test]
     fn update_interface_0_common_scenario() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg7.conf";
+        const TEST_CONF_FILE: &str = "wg9.conf";
         let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT;
 
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
@@ -951,7 +1040,7 @@ PrivateKey
                 .parse()
                 .unwrap(),
             "192.168.130.131/25".parse().unwrap(),
-            8082,
+            Some(8082),
             Some(IpAddr::from_str("8.8.8.8").unwrap()),
             Some("some-script".to_string()),
             Some("some-other-script".to_string()),
@@ -976,7 +1065,7 @@ PrivateKey
     #[test]
     fn peers_iter_0_common_scenario() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg8.conf";
+        const TEST_CONF_FILE: &str = "wg10.conf";
         let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT;
 
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
@@ -1001,7 +1090,6 @@ PrivateKey
                 assert_eq!("10.0.0.2/32", peer.allowed_ips[0].to_string());
                 assert!(peer.preshared_key.is_none());
                 assert!(peer.persistent_keepalive.is_none());
-                assert!(peer.dns.is_none());
             }
             None => panic!("Couldn't get the first peer"),
         }
@@ -1024,8 +1112,6 @@ PrivateKey
                 );
                 assert!(peer.persistent_keepalive.is_some());
                 assert_eq!(25, peer.persistent_keepalive.unwrap());
-                assert!(peer.dns.is_some());
-                assert_eq!("8.8.8.8", peer.dns.unwrap().to_string());
             }
             None => panic!("Couldn't get the second peer"),
         }
@@ -1037,7 +1123,7 @@ PrivateKey
     #[test]
     fn peers_iter_0_no_peers_0_returns_no_err() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg9.conf";
+        const TEST_CONF_FILE: &str = "wg11.conf";
         let content = INTERFACE_CONTENT.to_string();
 
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
@@ -1065,7 +1151,7 @@ PresharedKey = 4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=
 PersistentKeepalive = 25
 DNS = 8.8.8.8
 ";
-        const TEST_CONF_FILE: &str = "wg10.conf";
+        const TEST_CONF_FILE: &str = "wg12.conf";
         let content = INTERFACE_CONTENT.to_string() + "\n" + BAD_AND_GOOD_PEER_CONTENT;
 
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
@@ -1091,7 +1177,7 @@ DNS = 8.8.8.8
     #[test]
     fn add_peer_0_common_scenario() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg11.conf";
+        const TEST_CONF_FILE: &str = "wg13.conf";
         let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
 
         let peer = WgPeer::new(
@@ -1099,13 +1185,13 @@ DNS = 8.8.8.8
                 .parse()
                 .unwrap(),
             vec!["10.0.0.1/32".parse().unwrap()],
+            Some("127.0.0.2:8080".parse().unwrap()),
             Some(
                 "6FyM4Sq5zanp+9UOXIygLJQBYvlLsfF5lYcrSoa3CX8="
                     .parse()
                     .unwrap(),
             ),
             Some(25),
-            Some("8.8.8.8".parse().unwrap()),
         );
 
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
@@ -1128,20 +1214,20 @@ DNS = 8.8.8.8
     #[test]
     fn add_peer_0_already_exists() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg12.conf";
+        const TEST_CONF_FILE: &str = "wg14.conf";
         let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
         let peer = WgPeer::new(
             "Rrr2pT8pOvcEKdp1KpsvUi8OO/fYIWnkVcnXJ3dtUE4="
                 .parse()
                 .unwrap(),
             vec!["10.0.0.1/32".parse().unwrap()],
+            Some("127.0.0.2:8080".parse().unwrap()),
             Some(
                 "6FyM4Sq5zanp+9UOXIygLJQBYvlLsfF5lYcrSoa3CX8="
                     .parse()
                     .unwrap(),
             ),
             Some(25),
-            Some("8.8.8.8".parse().unwrap()),
         );
 
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
@@ -1157,7 +1243,7 @@ DNS = 8.8.8.8
     #[test]
     fn remove_peer_by_pub_key_0_first_peer() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg13.conf";
+        const TEST_CONF_FILE: &str = "wg15.conf";
         let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
 
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
@@ -1192,8 +1278,6 @@ DNS = 8.8.8.8
                 );
                 assert!(peer.persistent_keepalive.is_some());
                 assert_eq!(25, peer.persistent_keepalive.unwrap());
-                assert!(peer.dns.is_some());
-                assert_eq!("8.8.8.8", peer.dns.unwrap().to_string());
             }
             None => panic!("Couldn't get peer after removing the previous one"),
         }
@@ -1204,7 +1288,7 @@ DNS = 8.8.8.8
     #[test]
     fn remove_peer_by_pub_key_0_last_peer() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg14.conf";
+        const TEST_CONF_FILE: &str = "wg16.conf";
         let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
 
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
@@ -1233,7 +1317,6 @@ DNS = 8.8.8.8
                 assert_eq!("10.0.0.2/32", peer.allowed_ips[0].to_string());
                 assert!(peer.preshared_key.is_none());
                 assert!(peer.persistent_keepalive.is_none());
-                assert!(peer.dns.is_none());
             }
             None => panic!("Couldn't get peer after removing the previous one"),
         }
@@ -1244,7 +1327,7 @@ DNS = 8.8.8.8
     #[test]
     fn remove_peer_by_pub_key_0_middle_peer() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg15.conf";
+        const TEST_CONF_FILE: &str = "wg17.conf";
 
         const ADDITIONAL_PEER: &str = "[Peer]
 PublicKey = 4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=
@@ -1282,7 +1365,6 @@ DNS = 0.0.0.0
                 assert_eq!("10.0.0.2/32", peer.allowed_ips[0].to_string());
                 assert!(peer.preshared_key.is_none());
                 assert!(peer.persistent_keepalive.is_none());
-                assert!(peer.dns.is_none());
             }
             None => panic!("Couldn't get peer after removing the previous one"),
         }
@@ -1306,8 +1388,6 @@ DNS = 0.0.0.0
                 );
                 assert!(peer.persistent_keepalive.is_some());
                 assert_eq!(25, peer.persistent_keepalive.unwrap());
-                assert!(peer.dns.is_some());
-                assert_eq!("8.8.8.8", peer.dns.unwrap().to_string());
             }
             None => panic!("Couldn't get peer after removing the previous one"),
         }
@@ -1320,7 +1400,7 @@ DNS = 0.0.0.0
     #[test]
     fn remove_peer_by_pub_key_0_unexistent() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg16.conf";
+        const TEST_CONF_FILE: &str = "wg18.conf";
         let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
 
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
@@ -1334,6 +1414,75 @@ DNS = 0.0.0.0
 
         // Assert
         assert_eq!(WgConfErrKind::NotFound, res.unwrap_err().kind());
+    }
+
+    #[cfg(feature = "wg_engine")]
+    #[test]
+    fn generate_peer_0_common_scenario() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg19.conf";
+        let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
+
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
+        let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+
+        // Act
+        let res = wg_conf.generate_peer(
+            "10.0.0.2".parse().unwrap(),
+            "127.0.0.2:8080".parse().unwrap(),
+            Some("8.8.8.8".parse().unwrap()),
+            true,
+            Some(10),
+        );
+        let count = wg_conf.peers().unwrap().count();
+        let peers_iter = wg_conf.peers().unwrap();
+        let last_peer = peers_iter.last();
+
+        // Assert
+        assert!(res.is_ok());
+        assert_eq!(3, count);
+        assert!(last_peer.is_some());
+
+        let last_peer = last_peer.unwrap();
+        assert_eq!(
+            "10.0.0.2/32",
+            last_peer.allowed_ips.first().unwrap().to_string()
+        );
+        assert!(last_peer.endpoint.is_none());
+        assert!(last_peer.preshared_key.is_some());
+        assert_eq!(10, last_peer.persistent_keepalive.unwrap());
+
+        let client_conf = res.unwrap();
+
+        let client_interface = client_conf.interface();
+        let regenerated_client_pub_key =
+            WgKey::generate_public_key(&client_interface.private_key).unwrap();
+        assert_eq!(*&regenerated_client_pub_key, *last_peer.public_key());
+        assert_eq!("10.0.0.2/32", client_interface.address().to_string());
+        assert_eq!("8.8.8.8", client_interface.dns.unwrap().to_string());
+        assert!(client_interface.listen_port().is_none());
+        assert!(client_interface.post_up.is_none());
+        assert!(client_interface.post_down.is_none());
+
+        let client_peer_w_server = client_conf.peers().first().unwrap();
+        assert_eq!(wg_conf.pub_key().unwrap(), client_peer_w_server.public_key);
+        assert_eq!(
+            "0.0.0.0/0",
+            client_peer_w_server
+                .allowed_ips
+                .first()
+                .unwrap()
+                .to_string()
+        );
+        assert_eq!(
+            "127.0.0.2:8080",
+            client_peer_w_server.endpoint.unwrap().to_string()
+        );
+        assert_eq!(
+            last_peer.preshared_key(),
+            client_peer_w_server.preshared_key()
+        );
+        assert_eq!(10, client_peer_w_server.persistent_keepalive.unwrap());
     }
 
     fn prepare_test_conf(conf_name: &'static str, content: &str) -> Deferred {

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::IpAddr};
+use std::{collections::HashMap, net::SocketAddr};
 
 use ipnetwork::IpNetwork;
 
@@ -10,18 +10,18 @@ pub const PEER_TAG: &'static str = "[Peer]";
 // Fields
 const PUBLIC_KEY: &'static str = "PublicKey";
 const ALLOWED_IPS: &'static str = "AllowedIPs";
+const ENDPOINT: &'static str = "Endpoint";
 const PRESHARED_KEY: &'static str = "PresharedKey";
 const PERSISTENT_KEEPALIVE: &'static str = "PersistentKeepalive";
-const DNS: &'static str = "DNS";
 
 /// Represents WG \[Peer\] section
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WgPeer {
     pub(crate) public_key: WgKey,
     pub(crate) allowed_ips: Vec<IpNetwork>,
+    pub(crate) endpoint: Option<SocketAddr>,
     pub(crate) preshared_key: Option<WgKey>,
     pub(crate) persistent_keepalive: Option<u16>,
-    pub(crate) dns: Option<IpAddr>,
 }
 
 impl ToString for WgPeer {
@@ -34,6 +34,11 @@ impl ToString for WgPeer {
             }
         }
 
+        let endpoint = match &self.endpoint {
+            Some(val) => format!("\n{} = {}", ENDPOINT, val.to_string()),
+            None => "".to_string(),
+        };
+
         let preshared_key = match &self.preshared_key {
             Some(val) => format!("\n{} = {}", PRESHARED_KEY, val.to_string()),
             None => "".to_string(),
@@ -41,11 +46,6 @@ impl ToString for WgPeer {
 
         let keepalive = match self.persistent_keepalive {
             Some(val) => format!("\n{} = {}", PERSISTENT_KEEPALIVE, &val),
-            None => "".to_string(),
-        };
-
-        let dns = match &self.dns {
-            Some(val) => format!("\n{} = {}", DNS, &val),
             None => "".to_string(),
         };
 
@@ -59,9 +59,9 @@ impl ToString for WgPeer {
             self.public_key.to_string(),
             ALLOWED_IPS,
             allowed_ips_raw,
+            endpoint,
             preshared_key,
-            keepalive,
-            dns
+            keepalive
         )
     }
 }
@@ -71,25 +71,25 @@ impl WgPeer {
     pub fn new(
         public_key: WgKey,
         allowed_ips: Vec<IpNetwork>,
+        endpoint: Option<SocketAddr>,
         preshared_key: Option<WgKey>,
         persistent_keepalive: Option<u16>,
-        dns: Option<IpAddr>,
     ) -> WgPeer {
         WgPeer {
             public_key,
             allowed_ips,
+            endpoint,
             preshared_key,
             persistent_keepalive,
-            dns,
         }
     }
 
     pub fn from_raw_values(
         public_key: String,
         allowed_ips: Vec<String>,
+        endpoint: Option<String>,
         preshared_key: Option<String>,
         persistent_keepalive: Option<String>,
-        dns: Option<String>,
     ) -> Result<WgPeer, WgConfError> {
         let public_key: WgKey = public_key.parse()?;
 
@@ -104,6 +104,14 @@ impl WgPeer {
             })
             .collect();
         let allowed_ips = allowed_ips?;
+
+        let endpoint: Option<SocketAddr> = endpoint
+            .map(|endpoint| {
+                endpoint.parse().map_err(|_| {
+                    WgConfError::ValidationFailed("invalid endpoint raw value".to_string())
+                })
+            })
+            .transpose()?;
 
         let preshared_key: Option<WgKey> = preshared_key
             .map(|key| {
@@ -123,20 +131,12 @@ impl WgPeer {
             })
             .transpose()?;
 
-        let dns: Option<IpAddr> = dns
-            .map(|dns| {
-                dns.parse().map_err(|_| {
-                    WgConfError::ValidationFailed("dns must be an ip address".to_string())
-                })
-            })
-            .transpose()?;
-
         Ok(WgPeer::new(
             public_key,
             allowed_ips,
+            endpoint,
             preshared_key,
             persistent_keepalive,
-            dns,
         ))
     }
 
@@ -147,14 +147,14 @@ impl WgPeer {
     pub fn allowed_ips(&self) -> &[IpNetwork] {
         &self.allowed_ips
     }
+    pub fn endpoint(&self) -> Option<&SocketAddr> {
+        self.endpoint.as_ref()
+    }
     pub fn preshared_key(&self) -> Option<&WgKey> {
         self.preshared_key.as_ref()
     }
     pub fn persistent_keepalive(&self) -> Option<u16> {
         self.persistent_keepalive
-    }
-    pub fn dns(&self) -> Option<&IpAddr> {
-        self.dns.as_ref()
     }
 
     pub(crate) fn from_raw_key_values(
@@ -162,9 +162,9 @@ impl WgPeer {
     ) -> Result<WgPeer, WgConfError> {
         let mut public_key = String::new();
         let mut allowed_ips = Vec::<String>::new();
+        let mut endpoint: Option<String> = None;
         let mut preshared_key: Option<String> = None;
         let mut persistent_keepalive: Option<String> = None;
-        let mut dns: Option<String> = None;
 
         for (k, v) in raw_key_values {
             match k {
@@ -175,9 +175,9 @@ impl WgPeer {
                         allowed_ips.push(ip.to_string());
                     }
                 }
+                _ if k == ENDPOINT => endpoint = Some(v),
                 _ if k == PRESHARED_KEY => preshared_key = Some(v),
                 _ if k == PERSISTENT_KEEPALIVE => persistent_keepalive = Some(v),
-                _ if k == DNS => dns = Some(v),
                 _ => continue,
             }
         }
@@ -185,9 +185,9 @@ impl WgPeer {
         WgPeer::from_raw_values(
             public_key,
             allowed_ips,
+            endpoint,
             preshared_key,
             persistent_keepalive,
-            dns,
         )
     }
 }
@@ -207,13 +207,13 @@ mod tests {
                 "10.0.0.1/32".parse().unwrap(),
                 "10.0.0.2/32".parse().unwrap(),
             ],
+            Some("127.0.0.2:8080".parse().unwrap()),
             Some(
                 "6FyM4Sq5zanp+9UOXIygLJQBYvlLsfF5lYcrSoa3CX8="
                     .parse()
                     .unwrap(),
             ),
             Some(25),
-            Some("8.8.8.8".parse().unwrap()),
         );
 
         // Act
@@ -224,9 +224,9 @@ mod tests {
             "[Peer]
 PublicKey = 6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8=
 AllowedIPs = 10.0.0.1/32, 10.0.0.2/32
+Endpoint = 127.0.0.2:8080
 PresharedKey = 6FyM4Sq5zanp+9UOXIygLJQBYvlLsfF5lYcrSoa3CX8=
 PersistentKeepalive = 25
-DNS = 8.8.8.8
 ",
             peer_raw
         );
@@ -240,13 +240,13 @@ DNS = 8.8.8.8
                 .parse()
                 .unwrap(),
             vec!["10.0.0.1/32".parse().unwrap()],
+            Some("127.0.0.2:8080".parse().unwrap()),
             Some(
                 "6FyM4Sq5zanp+9UOXIygLJQBYvlLsfF5lYcrSoa3CX8="
                     .parse()
                     .unwrap(),
             ),
             Some(25),
-            Some("8.8.8.8".parse().unwrap()),
         );
 
         // Act
@@ -257,9 +257,9 @@ DNS = 8.8.8.8
             "[Peer]
 PublicKey = 6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8=
 AllowedIPs = 10.0.0.1/32
+Endpoint = 127.0.0.2:8080
 PresharedKey = 6FyM4Sq5zanp+9UOXIygLJQBYvlLsfF5lYcrSoa3CX8=
 PersistentKeepalive = 25
-DNS = 8.8.8.8
 ",
             peer_raw
         );
@@ -278,7 +278,7 @@ DNS = 8.8.8.8
             ],
             None,
             None,
-            Some("8.8.8.8".parse().unwrap()),
+            None,
         );
 
         // Act
@@ -289,7 +289,6 @@ DNS = 8.8.8.8
             "[Peer]
 PublicKey = 6FyM4Sq5zanp+9UPXIygLJQBYvlLsfF5lYcrSoa3CX8=
 AllowedIPs = 10.0.0.1/32, 10.0.0.2/32
-DNS = 8.8.8.8
 ",
             peer_raw
         );
