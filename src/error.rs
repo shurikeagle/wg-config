@@ -11,7 +11,7 @@ pub enum WgConfErrKind {
     CouldntUpdateInterface,
     CriticalKeepTmp,
     EOF,
-    WgEngineError
+    WgEngineError,
 }
 
 #[derive(Debug)]
@@ -33,7 +33,7 @@ pub enum WgConfError {
     /// End of file reached
     EOF,
     /// Error when using WG engine
-    WgEngineError(String)
+    WgEngineError(String),
 }
 
 impl Clone for WgConfError {
@@ -86,8 +86,9 @@ impl Display for WgConfError {
                 "Critical error occurred, the correct WG config is kept as .tmp: {err}"
             ),
             WgConfError::EOF => write!(f, "End of file reached"),
-            WgConfError::WgEngineError(err) => write!(f,
-            "Error occurred when using WG engine: {err}"),
+            WgConfError::WgEngineError(err) => {
+                write!(f, "Error occurred when using WG engine: {err}")
+            }
         }
     }
 }

@@ -21,8 +21,6 @@ use std::net::{IpAddr, SocketAddr};
 
 const CONF_EXTENSION: &'static str = "conf";
 
-// TODO: Add process-safety mechanism (think about some optimistic concurrency approach or add OS lock at least)
-
 /// Represents WG configuration file
 #[derive(Debug)]
 pub struct WgConf {
@@ -291,7 +289,7 @@ impl WgConf {
     pub fn generate_peer(
         &mut self,
         client_address: IpAddr,
-        server_endpoint: SocketAddr,
+        server_endpoint: IpAddr,
         server_allowed_ips: Vec<IpNetwork>,
         dns: Option<IpAddr>,
         use_preshared_key: bool,
@@ -323,6 +321,12 @@ impl WgConf {
 
         let client_interface =
             WgInterface::new(client_private_key, client_address, None, dns, None, None)?;
+
+        let server_listen_port = self.interface()?.listen_port.unwrap(); // for server there is always listen port
+        let server_endpoint: SocketAddr =
+            format!("{}:{}", server_endpoint.to_string(), server_listen_port)
+                .parse()
+                .unwrap();
         let client_peer_w_server = WgPeer::new(
             server_pub_key,
             server_allowed_ips,
@@ -809,7 +813,7 @@ PersistentKeepalive = 25
 
         let interface = WgInterface::new(
             private_key.clone(),
-            "192.168.130.131/25".parse().unwrap(),
+            "10.0.0.1/24".parse().unwrap(),
             Some(8082),
             None,
             Some("some-script".to_string()),
@@ -820,14 +824,14 @@ PersistentKeepalive = 25
         let peers = vec![
             WgPeer::new(
                 peer1_pubkey.clone(),
-                vec!["10.0.0.1/32".parse().unwrap()],
+                vec!["10.0.0.2/32".parse().unwrap()],
                 None,
                 Some(psk.clone()),
                 Some(25),
             ),
             WgPeer::new(
                 peer2_pubkey.clone(),
-                vec!["10.0.0.1/32".parse().unwrap()],
+                vec!["10.0.0.3/32".parse().unwrap()],
                 None,
                 None,
                 None,
@@ -1435,7 +1439,7 @@ DNS = 0.0.0.0
         // Act
         let res = wg_conf.generate_peer(
             "10.0.0.2".parse().unwrap(),
-            "127.0.0.2:8080".parse().unwrap(),
+            "127.0.0.2".parse().unwrap(),
             vec!["0.0.0.0/0".parse().unwrap()],
             Some("8.8.8.8".parse().unwrap()),
             true,

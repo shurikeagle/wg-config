@@ -1,6 +1,6 @@
 [package]
 name = "wg-conf"
-description = "WireGuard config file management"
+description = "WireGuard config management"
 version = "0.0.1"
 edition = "2021"
 authors = ["shurikeagle <alexander.orlov22@gmail.com>"]
