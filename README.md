@@ -6,16 +6,16 @@ The crate may be used in utils to simplify WireGuard management or in web apps t
 [crates.io](https://crates.io/crates/wg-config)
 
 ### WgConf entity
-The 'entrypoint' of this crate is [WgConf](https://docs.rs/wg-config/latest/wg_conf/struct.WgConf.html) which represents 'server' .conf file. Almost all the functionality of the crate is provided with this entity. 
+The 'entrypoint' of this crate is [WgConf](https://docs.rs/wg-config/latest/wg_config/struct.WgConf.html) which represents 'server' .conf file. Almost all the functionality of the crate is provided with this entity. 
 
 ### WgConf Peers
-`WgConf` has `peers()` method which returns [WgConfPeers](https://docs.rs/wg-config/latest/wg_conf/struct.WgConfPeers.html) iterator which is more optimal in case of many peers in server's config. After using this iterator one should to check if `WgConfPeer.err()` is None or `== WgConfErrKind::EOF`. Yes, it may look a bit uncomfortable, but it much better in case of filtering predicats to check `WgPeer` itself intead of `Result<WgPeer, WgConfError>`
+`WgConf` has `peers()` method which returns [WgConfPeers](https://docs.rs/wg-config/latest/wg_config/struct.WgConfPeers.html) iterator which is more optimal in case of many peers in server's config. After using this iterator one should to check if `WgConfPeer.err()` is None or `== WgConfErrKind::EOF`. Yes, it may look a bit uncomfortable, but it much better in case of filtering predicats to check `WgPeer` itself intead of `Result<WgPeer, WgConfError>`
 
 ### Parallel access
 Now there aren't any thread and process safety mechanism for accessing `WgConf` yet, meanwhile it should be for consistency, e.g. in web apps where a few administrators may edit conf file in parallel. Some kind of optimistic-like blocking will be implemented in time, but now, it's crate consumer's app responsibility to implement them if required. 
 
 ### Errors
-This crate in case of errors returns different types of [WgConfError](https://docs.rs/wg-config/latest/error/struct.WgConfError.html). The error may be checked with `.kind()` method which returns [WgConfErrKind](https://docs.rs/wg-config/latest/error/struct.WgConfErrKind.html).
+This crate in case of errors returns different types of [WgConfError](https://docs.rs/wg-config/latest/wg_config/enum.WgConfError.html). The error may be checked with `.kind()` method which returns [WgConfErrKind](https://docs.rs/wg-config/latest/wg_config/enum.WgConfErrKind.html).
 
 ### Examples 
 Examples of usage and logic restrictions may be viewed in tests and also in `Quick start` below
