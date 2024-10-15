@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::IpAddr, str::FromStr};
+use std::{collections::HashMap, fmt::Debug, net::IpAddr, str::FromStr};
 
 use ipnetwork::IpNetwork;
 
@@ -16,7 +16,7 @@ const POST_UP: &'static str = "PostUp";
 const POST_DOWN: &'static str = "PostDown";
 
 /// Represents WG \[Interface\] section
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WgInterface {
     pub(crate) private_key: WgKey,
     pub(crate) address: IpNetwork,
@@ -24,6 +24,19 @@ pub struct WgInterface {
     pub(crate) dns: Option<IpAddr>,
     pub(crate) post_up: Option<String>,
     pub(crate) post_down: Option<String>,
+}
+
+impl Debug for WgInterface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WgInterface")
+            .field("private_key", &"***")
+            .field("address", &self.address)
+            .field("listen_port", &self.listen_port)
+            .field("dns", &self.dns)
+            .field("post_up", &self.post_up)
+            .field("post_down", &self.post_down)
+            .finish()
+    }
 }
 
 impl ToString for WgInterface {

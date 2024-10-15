@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::SocketAddr};
+use std::{collections::HashMap, fmt::Debug, net::SocketAddr};
 
 use ipnetwork::IpNetwork;
 
@@ -15,13 +15,25 @@ const PRESHARED_KEY: &'static str = "PresharedKey";
 const PERSISTENT_KEEPALIVE: &'static str = "PersistentKeepalive";
 
 /// Represents WG \[Peer\] section
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WgPeer {
     pub(crate) public_key: WgKey,
     pub(crate) allowed_ips: Vec<IpNetwork>,
     pub(crate) endpoint: Option<SocketAddr>,
     pub(crate) preshared_key: Option<WgKey>,
     pub(crate) persistent_keepalive: Option<u16>,
+}
+
+impl Debug for WgPeer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WgPeer")
+            .field("public_key", &self.public_key)
+            .field("allowed_ips", &self.allowed_ips)
+            .field("endpoint", &self.endpoint)
+            .field("preshared_key", &"***")
+            .field("persistent_keepalive", &self.persistent_keepalive)
+            .finish()
+    }
 }
 
 impl ToString for WgPeer {
