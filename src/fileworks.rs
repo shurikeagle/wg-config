@@ -71,7 +71,7 @@ pub(crate) fn open_file_w_all_permissions(file_name: &str) -> Result<File, WgCon
     OpenOptions::new()
         .read(true)
         .write(true)
-        .append(true)
+        .append(true) // TODO: write with append won't work, one need to fix logic!
         .open(file_name)
         .map_err(|err| match err.kind() {
             ErrorKind::NotFound => WgConfError::NotFound(file_name.to_string()),

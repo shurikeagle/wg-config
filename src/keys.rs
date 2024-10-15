@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{fmt::Debug, str::FromStr};
 #[cfg(feature = "wg_engine")]
 use std::{
     io::Write,
@@ -16,8 +16,8 @@ pub struct WgKey {
 }
 
 pub type WgPrivateKey = WgKey;
-pub type WgPublicKey = WgKey;
 pub type WgPresharedKey = WgKey;
+pub type WgPublicKey = WgKey;
 
 impl ToString for WgKey {
     fn to_string(&self) -> String {

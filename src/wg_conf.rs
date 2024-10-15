@@ -7,9 +7,8 @@ use std::{
 };
 
 use crate::{
-    error::WgConfError,
-    fileworks::{self, open_file_w_all_permissions},
-    wg_interface, wg_peer, WgConfErrKind, WgInterface, WgKey, WgPeer, WgPublicKey,
+    error::WgConfError, fileworks, wg_interface, wg_peer, WgConfErrKind, WgInterface, WgKey,
+    WgPeer, WgPublicKey,
 };
 
 #[cfg(feature = "wg_engine")]
@@ -61,7 +60,7 @@ impl WgConf {
             })?;
         }
 
-        let mut conf_file = open_file_w_all_permissions(file_name).map_err(|err| {
+        let mut conf_file = fileworks::open_file_w_all_permissions(file_name).map_err(|err| {
             let _ = fs::remove_file(file_name);
 
             err
@@ -185,21 +184,12 @@ impl WgConf {
     }
 
     /// Adds \[Peer\] to WG config file
-    pub fn add_peer(&mut self, peer: WgPeer) -> Result<(), WgConfError> {
+    pub fn add_peer(&mut self, peer: &WgPeer) -> Result<(), WgConfError> {
         self.conf_file.seek(SeekFrom::End(0)).map_err(|err| {
             WgConfError::Unexpected(format!("Couldn't set cursor to the end of the file: {err}"))
         })?;
 
-        // Check peer with provided peer is not exist
-        let mut peers = self.peers()?;
-        let existing_peer = peers.find(|p| p.public_key() == peer.public_key());
-        peers.check_err()?;
-        if let Some(_) = existing_peer {
-            return Err(WgConfError::AlreadyExists(format!(
-                "Peer with public key '{}'",
-                &peer.public_key.to_string()
-            )));
-        }
+        let _ = self.check_peer_exist(&peer.public_key, false)?;
 
         let content = peer.to_string() + "\n";
         self.conf_file
@@ -211,30 +201,40 @@ impl WgConf {
         Ok(())
     }
 
-    pub fn remove_peer_by_pub_key(mut self, public_key: &WgKey) -> Result<WgConf, WgConfError> {
+    /// Updates \[Peer\] in WG config file
+    pub fn update_peer(mut self, peer: &WgPeer) -> Result<WgConf, WgConfError> {
         let mut peers = self.peers()?;
-
-        // find target peer
-        let target_peer = peers.find(|p| p.public_key() == public_key);
+        let existing_peer = peers.find(|p| *p.public_key() == *peer.public_key());
         peers.check_err()?;
-        if let None = target_peer {
+
+        if existing_peer.is_none() {
             return Err(WgConfError::NotFound(format!(
                 "Peer with public key '{}'",
-                public_key.to_string()
+                peer.public_key().to_string()
             )));
         }
 
-        // as target peer found, iterator sets current peer's start & end positions
-        let start_peer_pos = peers
-            .cur_peer_start_position
-            .ok_or(WgConfError::Unexpected(
-                "Couldn't define target peer start position".to_string(),
-            ))?;
-        let end_peer_pos = peers.cur_peer_end_position.ok_or(WgConfError::Unexpected(
-            "Couldn't define target peer end position".to_string(),
-        ))?;
+        let existing_peer = existing_peer.unwrap();
+        if existing_peer == *peer {
+            return Ok(self);
+        }
 
-        drop(peers);
+        // TODO: fix fileworks::open_file_w_all_permissions (see TODO there) and make overwriting without remove-add funcs
+        // if new peer len == old peer len
+
+        // remove old peer and add this as new
+        let mut updated_conf = self.remove_peer_by_pub_key(&peer.public_key)?;
+        updated_conf.add_peer(peer)?;
+
+        let _ = fileworks::seek_to_start(&mut updated_conf.conf_file, "");
+
+        Ok(updated_conf)
+    }
+
+    /// Removes \[Peer\] with provided public key from WG config file
+    pub fn remove_peer_by_pub_key(mut self, public_key: &WgKey) -> Result<WgConf, WgConfError> {
+        // get target's peer start & end pos
+        let (start_peer_pos, end_peer_pos) = self.check_peer_exist(public_key, true)?.unwrap();
 
         let (tmp_file_name, mut tmp_file) = fileworks::create_tmp_file(&self.conf_file_name)?;
 
@@ -336,7 +336,7 @@ impl WgConf {
         );
         let client_conf = WgClientConf::new(client_interface, vec![client_peer_w_server]);
 
-        self.add_peer(server_peer_w_client)?;
+        self.add_peer(&server_peer_w_client)?;
 
         Ok(client_conf)
     }
@@ -394,11 +394,18 @@ impl WgConf {
     }
 
     fn update_interface_in_file(mut self, interface: WgInterface) -> Result<WgConf, WgConfError> {
+        // TODO: fix fileworks::open_file_w_all_permissions (see TODO there) and make overwriting without remove-add funcs
+        // if new interface len == old interface len
+
         let (tmp_file_name, mut tmp_file) = fileworks::create_tmp_file(&self.conf_file_name)?;
 
         // write new interface section into tmp
         let updated_peer_start_pos =
-            write_interface_to_file(&mut tmp_file, &tmp_file_name, &interface)?;
+            write_interface_to_file(&mut tmp_file, &tmp_file_name, &interface).map_err(|err| {
+                let _ = fs::remove_file(&tmp_file_name);
+
+                err
+            })?;
 
         // copy peers from current conf file to dst
         self.copy_peers(&mut tmp_file).map_err(|err| {
@@ -490,6 +497,44 @@ impl WgConf {
         let _ = fileworks::seek_to_start(&mut self.conf_file, "");
 
         Ok(cur_position)
+    }
+
+    /// returns peer start & end position if peer must exist and it exists
+    fn check_peer_exist(
+        &mut self,
+        pub_key: &WgPublicKey,
+        must_exist: bool,
+    ) -> Result<Option<(u64, u64)>, WgConfError> {
+        let mut peers = self.peers()?;
+        let existing_peer = peers.find(|p| *p.public_key() == *pub_key);
+        peers.check_err()?;
+
+        if let Some(_) = existing_peer {
+            if !must_exist {
+                return Err(WgConfError::AlreadyExists(format!(
+                    "Peer with public key '{}'",
+                    pub_key.to_string()
+                )));
+            }
+
+            let start_peer_pos = peers
+                .cur_peer_start_position
+                .ok_or(WgConfError::Unexpected(
+                    "Couldn't define target peer start position".to_string(),
+                ))?;
+            let end_peer_pos = peers.cur_peer_end_position.ok_or(WgConfError::Unexpected(
+                "Couldn't define target peer end position".to_string(),
+            ))?;
+
+            return Ok(Some((start_peer_pos, end_peer_pos)));
+        } else if must_exist {
+            return Err(WgConfError::NotFound(format!(
+                "Peer with public key '{}'",
+                pub_key.to_string()
+            )));
+        }
+
+        Ok(None)
     }
 }
 
@@ -693,8 +738,6 @@ fn write_interface_to_file(
     let interface_to_write = interface.to_string() + "\n";
     file.write_all(interface_to_write.as_bytes())
         .map_err(|err| {
-            let _ = fs::remove_file(file_name);
-
             WgConfError::Unexpected(format!(
                 "Couldn't write interface into {}: {}",
                 file_name,
@@ -854,7 +897,7 @@ PersistentKeepalive = 25
         assert!(wg_conf.cache.peer_start_pos.is_some());
         assert!(fs::exists(TEST_CONF_FILE).unwrap());
         let mut lines =
-            BufReader::new(open_file_w_all_permissions(TEST_CONF_FILE).unwrap()).lines();
+            BufReader::new(fileworks::open_file_w_all_permissions(TEST_CONF_FILE).unwrap()).lines();
         assert!(lines.any(|l| l.is_ok() && l.unwrap().contains(&private_key.to_string())));
         assert!(lines.any(|l| l.is_ok() && l.unwrap().contains(&peer1_pubkey.to_string())));
         assert!(lines.any(|l| l.is_ok() && l.unwrap().contains(&psk.to_string())));
@@ -887,7 +930,7 @@ PersistentKeepalive = 25
         // Assert
         assert!(wg_conf.unwrap_err().kind() == WgConfErrKind::AlreadyExists);
         let mut lines =
-            BufReader::new(open_file_w_all_permissions(TEST_CONF_FILE).unwrap()).lines();
+            BufReader::new(fileworks::open_file_w_all_permissions(TEST_CONF_FILE).unwrap()).lines();
         assert!(lines.any(|l| l.is_ok()
             && l.unwrap()
                 .contains("4DIjxC8pEzYZGvLLEbzHRb2dCxiyAOAfx9dx/NMlL2c=")));
@@ -1208,7 +1251,7 @@ DNS = 8.8.8.8
         let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
 
         // Act
-        let res = wg_conf.add_peer(peer.clone());
+        let res = wg_conf.add_peer(&peer);
         let count = wg_conf.peers().unwrap().count();
         let peers_iter = wg_conf.peers().unwrap();
         let last_peer = peers_iter.last();
@@ -1244,7 +1287,7 @@ DNS = 8.8.8.8
         let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
 
         // Act
-        let res = wg_conf.add_peer(peer);
+        let res = wg_conf.add_peer(&peer);
 
         // Assert
         assert_eq!(WgConfErrKind::AlreadyExists, res.err().unwrap().kind());
@@ -1408,9 +1451,43 @@ DNS = 0.0.0.0
     }
 
     #[test]
-    fn remove_peer_by_pub_key_0_unexistent() {
+    fn update_peer_0_same_len_0_removes_and_adds_to_end() {
         // Arrange
         const TEST_CONF_FILE: &str = "wg18.conf";
+        let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
+
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
+        let wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+        let target_key: WgKey = "LyXP6s7mzMlrlcZ5STONcPwTQFOUJuD8yQg6FYDeTzE="
+            .parse()
+            .unwrap();
+        let peer_to_update = WgPeer::new(
+            target_key.clone(),
+            vec!["10.0.0.4/32".parse().unwrap()],
+            None,
+            None,
+            None,
+        );
+
+        // Act
+        let update_res = wg_conf.update_peer(&peer_to_update);
+        let mut wg_conf = update_res.unwrap();
+        let mut peers = wg_conf.peers().unwrap();
+        let _ = peers.next();
+        let updated_peer = peers.next().unwrap();
+
+        // Assert
+        assert_eq!(target_key, *updated_peer.public_key());
+        assert_eq!(
+            "10.0.0.4/32",
+            updated_peer.allowed_ips().first().unwrap().to_string()
+        );
+    }
+
+    #[test]
+    fn remove_peer_by_pub_key_0_unexistent() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg19.conf";
         let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
 
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
@@ -1430,7 +1507,7 @@ DNS = 0.0.0.0
     #[test]
     fn generate_peer_0_common_scenario() {
         // Arrange
-        const TEST_CONF_FILE: &str = "wg19.conf";
+        const TEST_CONF_FILE: &str = "wg20.conf";
         let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
 
         let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);

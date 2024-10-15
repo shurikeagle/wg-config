@@ -9,6 +9,7 @@ pub enum WgConfErrKind {
     ConfFileClosed,
     ValidationFailed,
     CouldntUpdateInterface,
+    CoudlntUpdatePeer,
     CriticalKeepTmp,
     EOF,
     WgEngineError,
@@ -28,6 +29,8 @@ pub enum WgConfError {
     ValidationFailed(String),
     /// Couldn't update interface for some reason
     CouldntUpdateInterface(String),
+    /// Couldn't update peer
+    CouldntUpdatePeer(String),
     /// Some critical error occurred, config file was lost, actual config data is kept in .tmp file
     CriticalKeepTmp(String),
     /// End of file reached
@@ -45,6 +48,7 @@ impl Clone for WgConfError {
             Self::NotWgConfig(arg0) => Self::NotWgConfig(arg0.clone()),
             Self::ValidationFailed(arg0) => Self::ValidationFailed(arg0.clone()),
             Self::CouldntUpdateInterface(arg0) => Self::CouldntUpdateInterface(arg0.clone()),
+            Self::CouldntUpdatePeer(arg0) => Self::CouldntUpdatePeer(arg0.clone()),
             Self::CriticalKeepTmp(arg0) => Self::CriticalKeepTmp(arg0.clone()),
             Self::EOF => Self::EOF,
             Self::WgEngineError(arg0) => Self::WgEngineError(arg0.clone()),
@@ -61,6 +65,7 @@ impl WgConfError {
             WgConfError::NotWgConfig(_) => WgConfErrKind::NotWgConfig,
             WgConfError::ValidationFailed(_) => WgConfErrKind::ValidationFailed,
             WgConfError::CouldntUpdateInterface(_) => WgConfErrKind::CouldntUpdateInterface,
+            WgConfError::CouldntUpdatePeer(_) => WgConfErrKind::CoudlntUpdatePeer,
             WgConfError::CriticalKeepTmp(_) => WgConfErrKind::CriticalKeepTmp,
             WgConfError::EOF => WgConfErrKind::EOF,
             WgConfError::WgEngineError(_) => WgConfErrKind::WgEngineError,
@@ -81,6 +86,7 @@ impl Display for WgConfError {
             WgConfError::CouldntUpdateInterface(err) => {
                 write!(f, "Couldn't update WG interface: {err}")
             }
+            WgConfError::CouldntUpdatePeer(err) => write!(f, "Couldn't update WG peer: {err}"),
             WgConfError::CriticalKeepTmp(err) => write!(
                 f,
                 "Critical error occurred, the correct WG config is kept as .tmp: {err}"
