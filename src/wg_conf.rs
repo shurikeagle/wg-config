@@ -145,11 +145,10 @@ impl WgConf {
     }
 
     /// Updates \[Interface\] section in [`WgConf`] file
-    pub fn update_interface(self, new_inteface: WgInterface) -> Result<WgConf, WgConfError> {
-        if let Some(cached_interface) = &self.cache.interface {
-            if *cached_interface == new_inteface {
-                return Ok(self);
-            }
+    pub fn update_interface(mut self, new_inteface: WgInterface) -> Result<WgConf, WgConfError> {
+        let current_interface = self.interface()?;
+        if current_interface == new_inteface {
+            return Ok(self);
         }
 
         let mut updated_conf = self.update_interface_in_file(new_inteface)?;
