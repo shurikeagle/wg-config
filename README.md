@@ -1,6 +1,5 @@
 # wg-config
 
-[![Rust](https://github.com/shurikeagle/wg-config/workflows/Rust/badge.svg)](https://github.com/shurikeagle/wg-config/actions)
 [![Latest version](https://img.shields.io/crates/v/wg-config.svg)](https://crates.io/crates/wg-config)
 [![Documentation](https://docs.rs/wg-config/badge.svg)](https://docs.rs/wg-config)
 ![License](https://img.shields.io/crates/l/wg-config.svg)
