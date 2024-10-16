@@ -1,4 +1,10 @@
 # wg-config
+
+[![Rust](https://github.com/shurikeagle/wg-config/workflows/Rust/badge.svg)](https://github.com/shurikeagle/wg-config/actions)
+[![Latest version](https://img.shields.io/crates/v/wg-config.svg)](https://crates.io/crates/wg-config)
+[![Documentation](https://docs.rs/wg-config/badge.svg)](https://docs.rs/wg-config)
+![License](https://img.shields.io/crates/l/wg-config.svg)
+
 Current crate provides WireGuard .conf files management (creation and edition) for 'server' and 'client' peers' generation. This crate <u>doesn't</u> provide the functionality of WireGuard itself except key generation. Key generation in fact uses WireGuard CLI commands to avoid insecure self implementation, so, it requires WireGuard installed (applicable for Windows too). Key generation is enabled with `wg_engine` default feature. 
 
 The crate may be used in utils to simplify WireGuard management or in web apps that provide interface for WG.
