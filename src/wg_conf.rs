@@ -281,8 +281,6 @@ impl WgConf {
     /// If WG is used for virtual network as is, and, e.g. network address is 10.*, `10.0.0.0/8` may be used to use VPN only
     /// for this network and other traffic ('open' internet) will not bee sent through the server
     ///
-    /// `dns` may be None in this case default server's dns will be used by WG
-    ///
     /// `use_preshared_key` indicates if preshared key between server and client will be generated
     #[cfg(feature = "wg_engine")]
     pub fn generate_peer(

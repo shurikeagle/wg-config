@@ -8,8 +8,6 @@ Current crate provides WireGuard .conf files management (creation and edition) f
 
 The crate may be used in utils to simplify WireGuard management or in web apps that provide interface for WG.
 
-[crates.io](https://crates.io/crates/wg-config)
-
 ### WgConf entity
 The 'entrypoint' of this crate is [WgConf](https://docs.rs/wg-config/latest/wg_config/struct.WgConf.html) which represents 'server' .conf file. Almost all the functionality of the crate is provided with this entity. 
 
@@ -37,7 +35,7 @@ let interface = WgInterface::new(
             private_key,
             "10.0.0.1/24".parse().unwrap(), // 10.0.0.1-255 network
             Some(8082), // listen port
-            None, // no default dns for peers
+            None, // no DNS
             Some("ufw allow 8082/udp".to_string()), // allow 8082 when WG is started
             Some("ufw delete allow 8082/udp".to_string()),
         )
@@ -51,7 +49,7 @@ let wg_client_conf = wg_conf.generate_peer(
             "10.0.0.2".parse().unwrap(), // 10.0.0.2/32 will be used for this peer
             "192.168.130.131".parse().unwrap(), // public endpoint of server
             vec!["0.0.0.0/0".parse().unwrap()], // all the traffic will be sent through the server
-            Some("192.168.130.131".parse().unwrap()), // server is also DNS
+            Some("10.0.0.2".parse().unwrap()), // server is also DNS
             true, // generate preshared key for additional security
             Some(20), // 20 sec persistent keep alive
         ).unwrap();
