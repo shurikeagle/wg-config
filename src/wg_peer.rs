@@ -35,7 +35,7 @@ impl ToString for SocketAddrExt {
     fn to_string(&self) -> String {
         match self {
             SocketAddrExt::Socket(socket_addr) => socket_addr.to_string(),
-            SocketAddrExt::Domain(domain_url) => domain_url.clone(),
+            SocketAddrExt::Domain(domain_name) => domain_name.clone(),
         }
     }
 }

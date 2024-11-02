@@ -43,7 +43,7 @@ impl ToString for IpAddrExt {
     fn to_string(&self) -> String {
         match self {
             Self::Ip(ip_addr) => ip_addr.to_string(),
-            Self::Domain(domain_url) => domain_url.clone(),
+            Self::Domain(domain_name) => domain_name.clone(),
         }
     }
 }
