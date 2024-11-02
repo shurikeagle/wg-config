@@ -14,12 +14,38 @@ const ENDPOINT: &'static str = "Endpoint";
 const PRESHARED_KEY: &'static str = "PresharedKey";
 const PERSISTENT_KEEPALIVE: &'static str = "PersistentKeepalive";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SocketAddrExt {
+    Socket(SocketAddr),
+    Domain(String)    
+}
+
+impl std::str::FromStr for SocketAddrExt {
+    type Err = ();
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        if let Ok(ip) = input.parse::<SocketAddr>() {
+            return Ok(Self::Socket(ip));
+        }
+        Ok(Self::Domain(input.to_string()))
+    }
+}
+
+impl ToString for SocketAddrExt {
+    fn to_string(&self) -> String {
+        match self {
+            SocketAddrExt::Socket(socket_addr) => socket_addr.to_string(),
+            SocketAddrExt::Domain(domain_name) => domain_name.clone(),
+        }
+    }
+}
+
 /// Represents WG \[Peer\] section
 #[derive(Clone, PartialEq, Eq)]
 pub struct WgPeer {
     pub(crate) public_key: WgKey,
     pub(crate) allowed_ips: Vec<IpNetwork>,
-    pub(crate) endpoint: Option<SocketAddr>,
+    pub(crate) endpoint: Option<SocketAddrExt>,
     pub(crate) preshared_key: Option<WgKey>,
     pub(crate) persistent_keepalive: Option<u16>,
 }
@@ -83,7 +109,7 @@ impl WgPeer {
     pub fn new(
         public_key: WgKey,
         allowed_ips: Vec<IpNetwork>,
-        endpoint: Option<SocketAddr>,
+        endpoint: Option<SocketAddrExt>,
         preshared_key: Option<WgKey>,
         persistent_keepalive: Option<u16>,
     ) -> WgPeer {
@@ -117,7 +143,7 @@ impl WgPeer {
             .collect();
         let allowed_ips = allowed_ips?;
 
-        let endpoint: Option<SocketAddr> = endpoint
+        let endpoint: Option<SocketAddrExt> = endpoint
             .map(|endpoint| {
                 endpoint.parse().map_err(|_| {
                     WgConfError::ValidationFailed("invalid endpoint raw value".to_string())
@@ -159,7 +185,7 @@ impl WgPeer {
     pub fn allowed_ips(&self) -> &[IpNetwork] {
         &self.allowed_ips
     }
-    pub fn endpoint(&self) -> Option<&SocketAddr> {
+    pub fn endpoint(&self) -> Option<&SocketAddrExt> {
         self.endpoint.as_ref()
     }
     pub fn preshared_key(&self) -> Option<&WgKey> {

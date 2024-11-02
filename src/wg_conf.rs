@@ -16,9 +16,37 @@ use crate::WgClientConf;
 #[cfg(feature = "wg_engine")]
 use ipnetwork::IpNetwork;
 #[cfg(feature = "wg_engine")]
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 
 const CONF_EXTENSION: &'static str = "conf";
+
+#[cfg(feature = "wg_engine")]
+pub enum IpAddrExt {
+    Ip(IpAddr),
+    Domain(String)
+}
+
+#[cfg(feature = "wg_engine")]
+impl std::str::FromStr for IpAddrExt {
+    type Err = ();
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        if let Ok(ip) = input.parse::<IpAddr>() {
+            return Ok(Self::Ip(ip));
+        }
+        Ok(Self::Domain(input.to_string()))
+    }
+}
+
+#[cfg(feature = "wg_engine")]
+impl ToString for IpAddrExt {
+    fn to_string(&self) -> String {
+        match self {
+            Self::Ip(ip_addr) => ip_addr.to_string(),
+            Self::Domain(domain_name) => domain_name.clone(),
+        }
+    }
+}
 
 /// Represents WG configuration file
 #[derive(Debug)]
@@ -286,7 +314,7 @@ impl WgConf {
     pub fn generate_peer(
         &mut self,
         client_address: IpAddr,
-        server_endpoint: IpAddr,
+        server_endpoint: IpAddrExt,
         server_allowed_ips: Vec<IpNetwork>,
         dns: Option<IpAddr>,
         use_preshared_key: bool,
@@ -320,7 +348,7 @@ impl WgConf {
             WgInterface::new(client_private_key, client_address, None, dns, None, None)?;
 
         let server_listen_port = self.interface()?.listen_port.unwrap(); // for server there is always listen port
-        let server_endpoint: SocketAddr =
+        let server_endpoint: super::SocketAddrExt =
             format!("{}:{}", server_endpoint.to_string(), server_listen_port)
                 .parse()
                 .unwrap();
@@ -1502,7 +1530,7 @@ DNS = 0.0.0.0
 
     #[cfg(feature = "wg_engine")]
     #[test]
-    fn generate_peer_0_common_scenario() {
+    fn generate_peer_scenario_ip_endpoint() {
         // Arrange
         const TEST_CONF_FILE: &str = "wg20.conf";
         let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
@@ -1561,7 +1589,77 @@ DNS = 0.0.0.0
         );
         assert_eq!(
             "127.0.0.2:8080",
-            client_peer_w_server.endpoint.unwrap().to_string()
+            client_peer_w_server.endpoint.clone().unwrap().to_string()
+        );
+        assert_eq!(
+            last_peer.preshared_key(),
+            client_peer_w_server.preshared_key()
+        );
+        assert_eq!(10, client_peer_w_server.persistent_keepalive.unwrap());
+    }
+
+    #[cfg(feature = "wg_engine")]
+    #[test]
+    fn generate_peer_scenario_domain_endpoint() {
+        // Arrange
+        const TEST_CONF_FILE: &str = "wg21.conf";
+        let content = INTERFACE_CONTENT.to_string() + "\n" + PEER_CONTENT + "\n";
+
+        let _cleanup = prepare_test_conf(TEST_CONF_FILE, &content);
+        let mut wg_conf = WgConf::open(TEST_CONF_FILE).unwrap();
+
+        // Act
+        let res = wg_conf.generate_peer(
+            "10.0.0.2".parse().unwrap(),
+            "wg.example.domain".parse().unwrap(),
+            vec!["0.0.0.0/0".parse().unwrap()],
+            Some("8.8.8.8".parse().unwrap()),
+            true,
+            Some(10),
+        );
+        let count = wg_conf.peers().unwrap().count();
+        let peers_iter = wg_conf.peers().unwrap();
+        let last_peer = peers_iter.last();
+
+        // Assert
+        assert!(res.is_ok());
+        assert_eq!(3, count);
+        assert!(last_peer.is_some());
+
+        let last_peer = last_peer.unwrap();
+        assert_eq!(
+            "10.0.0.2/32",
+            last_peer.allowed_ips.first().unwrap().to_string()
+        );
+        assert!(last_peer.endpoint.is_none());
+        assert!(last_peer.preshared_key.is_some());
+        assert_eq!(10, last_peer.persistent_keepalive.unwrap());
+
+        let client_conf = res.unwrap();
+
+        let client_interface = client_conf.interface();
+        let regenerated_client_pub_key =
+            WgKey::generate_public_key(&client_interface.private_key).unwrap();
+        assert_eq!(*&regenerated_client_pub_key, *last_peer.public_key());
+        assert_eq!("10.0.0.2/32", client_interface.address().to_string());
+        assert_eq!("8.8.8.8", client_interface.dns.unwrap().to_string());
+        assert!(client_interface.listen_port().is_none());
+        assert!(client_interface.post_up.is_none());
+        assert!(client_interface.post_down.is_none());
+
+        let client_peer_w_server = client_conf.peers().first().unwrap();
+        assert_eq!(wg_conf.pub_key().unwrap(), client_peer_w_server.public_key);
+        assert_eq!(
+            "0.0.0.0/0",
+            client_peer_w_server
+                .allowed_ips
+                .first()
+                .unwrap()
+                .to_string()
+        );
+        assert_eq!(
+            "wg.example.domain:8080",
+            client_peer_w_server.endpoint.clone().unwrap().to_string()
         );
         assert_eq!(
             last_peer.preshared_key(),
