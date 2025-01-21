@@ -23,7 +23,7 @@ const CONF_EXTENSION: &'static str = "conf";
 #[cfg(feature = "wg_engine")]
 pub enum IpAddrExt {
     Ip(IpAddr),
-    Domain(String)
+    Domain(String),
 }
 
 #[cfg(feature = "wg_engine")]
@@ -329,12 +329,17 @@ impl WgConf {
             true => Some(WgKey::generate_preshared_key()?),
             false => None,
         };
-        let client_address: IpNetwork =
-            (client_address.to_string() + "/32").parse().map_err(|_| {
-                WgConfError::Unexpected(
-                    "Couldn't create address with mask from provided value".to_string(),
-                )
-            })?;
+        let client_address: IpNetwork = (client_address.to_string()
+            + match client_address {
+                IpAddr::V4(_) => "/32",
+                IpAddr::V6(_) => "/128",
+            })
+        .parse()
+        .map_err(|_| {
+            WgConfError::Unexpected(
+                "Couldn't create address with mask from provided value".to_string(),
+            )
+        })?;
 
         let server_peer_w_client = WgPeer::new(
             client_pub_key,
